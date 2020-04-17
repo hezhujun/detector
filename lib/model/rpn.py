@@ -135,7 +135,7 @@ class RegionProposalNetwork(nn.Module):
             post_nms_top_n = self.post_nms_top_n_in_train
         else:
             pre_nms_top_n = self.pre_nms_top_n_in_test
-            post_nms_top_n = self.post_nms_top_n_in_tes
+            post_nms_top_n = self.post_nms_top_n_in_test
 
         # NMS
         BS = cls_pred.shape[0]
