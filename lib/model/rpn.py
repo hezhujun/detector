@@ -13,15 +13,9 @@ class RegionProposalNetwork(nn.Module):
                  pre_nms_top_n_in_train, post_nms_top_n_in_train,
                  pre_nms_top_n_in_test, post_nms_top_n_in_test,
                  nms_thresh=0.7, fg_iou_thresh=0.7, bg_iou_thresh=0.3,
-                 num_samples=256, positive_fraction=0.5):
+                 num_samples=256, positive_fraction=0.5,
+                 logger=None):
         """
-
-        :param strides:
-        :param sizes:
-        :param scales:
-        :param ratios:
-        :param in_channels:
-
         strides: tuple, 步长，每个步长对应一个特征层，如
             (2**2,2**3,2**4,2**5,2**6)
             分别对应p2, p3, p4, p5, p6
@@ -62,6 +56,7 @@ class RegionProposalNetwork(nn.Module):
         self.positive_fraction = positive_fraction
         self.num_pos = int(num_samples * positive_fraction)
         self.num_neg = num_samples - self.num_pos
+        self.logger = logger
 
         self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
         self.cls = nn.Conv2d(in_channels, num_anchors, kernel_size=1, stride=1)
@@ -209,6 +204,12 @@ class RegionProposalNetwork(nn.Module):
             cls_label = torch.where(fg_bg_mask == 1, torch.ones_like(cls_pred), torch.zeros_like(cls_pred))
             cls_loss = F.binary_cross_entropy_with_logits(cls_pred[fg_bg_mask != 0], cls_label[fg_bg_mask != 0])
             reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
+
+            cls_pred = torch.sigmoid(cls_pred) >= 0.5
+            cls_label = cls_label == 1
+            accuracy = torch.mean((cls_label == cls_pred)[fg_bg_mask != 0].to(torch.float))
+            if self.logger is not None:
+                self.logger.add_scalar("rpn/acc", accuracy.detach().cpu().item())
 
             return bboxes, cls_loss, reg_loss
 

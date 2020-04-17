@@ -24,7 +24,8 @@ class FasterRCNN(nn.Module):
                  roi_pooling="roi_align", roi_pooling_output_size=7,
                  nms_thresh=0.5, fg_iou_thresh=0.5, bg_iou_thresh=0.5,
                  num_samples=128, positive_fraction=0.25,
-                 max_objs_per_image=50, obj_thresh=0.1):
+                 max_objs_per_image=50, obj_thresh=0.1,
+                 logger=None):
         super(FasterRCNN, self).__init__()
         self.image_size = image_size
         self.backbone = backbone
@@ -41,7 +42,8 @@ class FasterRCNN(nn.Module):
                                          fg_iou_thresh=rpn_fg_iou_thresh,
                                          bg_iou_thresh=rpn_bg_iou_thresh,
                                          num_samples=rpn_num_samples,
-                                         positive_fraction=rpn_positive_fraction)
+                                         positive_fraction=rpn_positive_fraction,
+                                         logger=logger)
         self.roi_head = roi_head
         self.cls = nn.Linear(dim_roi_features, num_classes + 1)
         self.reg = nn.Linear(dim_roi_features, num_classes * 4)
@@ -65,6 +67,7 @@ class FasterRCNN(nn.Module):
         self.roi_pooling = roi_pooling
         self.roi_pooling_output_size = roi_pooling_output_size
         self.obj_thresh = obj_thresh
+        self.logger = logger
 
     def forward(self, images, labels=None, gt_bboxes=None):
         """
@@ -216,13 +219,18 @@ class FasterRCNN(nn.Module):
             # (BS, num_samples, 4)
             reg_target = torch.stack(total_reg_target)
 
-            rcnn_reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask==1], reg_target[fg_bg_mask==1])
+            rcnn_reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
 
             cls_label = labels + 1  # 0 for background class
             cls_label = cls_label.reshape((-1,))
             cls_pred = cls_pred.reshape((-1, self.num_classes+1))
             fg_bg_mask = fg_bg_mask.reshape(-1,)
             rcnn_cls_loss = F.cross_entropy(cls_pred[fg_bg_mask != 0], cls_label[fg_bg_mask != 0])
+
+            cls_pred = torch.argmax(cls_pred, dim=1)
+            accuracy = torch.mean((cls_pred == cls_label)[fg_bg_mask != 0].to(torch.float))
+            if self.logger is not None:
+                self.logger.add_scalar("rcnn/acc", accuracy.detach().cpu().item())
 
             return rpn_cls_loss, rpn_reg_loss, rcnn_cls_loss, rcnn_reg_loss
 
@@ -282,7 +290,7 @@ class FasterRCNN(nn.Module):
         return scores, labels, bboxes
 
 
-def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_image, backbone_pretrained=False):
+def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
     resnet = models.resnet.__dict__[backbone_name](pretrained=backbone_pretrained)
     # return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
     backbone = models._utils.IntermediateLayerGetter(resnet, {'layer3': 'c4'})
@@ -323,14 +331,16 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
         max_objs_per_image=max_objs_per_image,
         roi_pooling="roi_align",
         roi_pooling_output_size=7,
+        logger=logger,
     )
 
 
-def faster_rcnn_resnet18(image_size, num_classes, max_objs_per_image, backbone_pretrained=False):
+def faster_rcnn_resnet18(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
     return faster_rcnn_resnet(
         "resnet18",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
-        backbone_pretrained=backbone_pretrained
+        backbone_pretrained=backbone_pretrained,
+        logger=logger
     )
