@@ -10,32 +10,6 @@ import torch.nn.functional as F
 from .util import BoxCoder
 
 
-class ResNetInFasterRCNN(models.ResNet):
-
-    def __init__(self, block, layers, num_classes=1, zero_init_residual=False,
-                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
-                 norm_layer=None):
-        super(ResNetInFasterRCNN, self).__init__(block, layers, num_classes, zero_init_residual,
-                 groups, width_per_group, replace_stride_with_dilation,
-                 norm_layer)
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-
-        return x
-
-    def box_head(self, x):
-        x = self.layer4(x)
-        return x
-
-
 class FasterRCNN(nn.Module):
     
     def __init__(self,
@@ -50,7 +24,7 @@ class FasterRCNN(nn.Module):
                  roi_pooling="roi_align", roi_pooling_output_size=7,
                  nms_thresh=0.5, fg_iou_thresh=0.5, bg_iou_thresh=0.5,
                  num_samples=128, positive_fraction=0.25,
-                 max_objs_per_image=50):
+                 max_objs_per_image=50, obj_thresh=0.1):
         super(FasterRCNN, self).__init__()
         self.image_size = image_size
         self.backbone = backbone
@@ -90,6 +64,7 @@ class FasterRCNN(nn.Module):
         self.num_neg = num_samples - self.num_pos
         self.roi_pooling = roi_pooling
         self.roi_pooling_output_size = roi_pooling_output_size
+        self.obj_thresh = obj_thresh
 
     def forward(self, images, labels=None, gt_bboxes=None):
         """
@@ -264,8 +239,8 @@ class FasterRCNN(nn.Module):
         reg_bboxes = reg_bboxes.permute((1, 0, 2)).reshape((BS, num_rois, self.num_classes, 4))
 
         # (num_rois, num_classes)
-        classes_id = torch.stack([
-            # (num_rois,)
+        classes_id = torch.cat([
+            # (num_rois, 1)
             torch.full_like(cls_scores[0, :, :1], i) for i in range(self.num_classes)
         ], dim=1)
         # (num_rois*num_classes)
@@ -277,19 +252,26 @@ class FasterRCNN(nn.Module):
 
         scores = []
         bboxes = []
+        labels = []
         for i in range(BS):
             _scores = torch.full((self.max_objs_per_image,), -1, dtype=cls_scores.dtype, device=cls_scores.device)
+            _labels = torch.full((self.max_objs_per_image,), -1, dtype=classes_id.dtype, device=classes_id.device)
             _bboxes = torch.full((self.max_objs_per_image, 4), -1, dtype=reg_bboxes.dtype, device=reg_bboxes.device)
-            keep = ops.boxes.batched_nms(reg_bboxes[i], cls_scores[i], classes_id, self.nms_thresh)
+            keep_mask = cls_scores[i] > self.obj_thresh
+            keep = ops.boxes.batched_nms(reg_bboxes[i][keep_mask], cls_scores[i][keep_mask], classes_id[keep_mask], self.nms_thresh)
             n_keep = keep.shape[0]
             n_keep = min(n_keep, self.max_objs_per_image)
             keep = keep[:n_keep]
             _scores[:n_keep] = cls_scores[i][keep]
+            _labels[:n_keep] = classes_id[keep]
             _bboxes[:n_keep] = reg_bboxes[i][keep]
+
             scores.append(_scores)
+            labels.append(_labels)
             bboxes.append(_bboxes)
 
         scores = torch.stack(scores)  # (BS, max_objs)
+        labels = torch.stack(labels)  # (BS, max_objs)
         bboxes = torch.stack(bboxes)  # (BS, max_objs, 4)
 
         bboxes[..., 0].clamp_(0, self.image_size[0])
@@ -297,7 +279,7 @@ class FasterRCNN(nn.Module):
         bboxes[..., 2].clamp_(0, self.image_size[0])
         bboxes[..., 3].clamp_(0, self.image_size[1])
 
-        return scores, bboxes
+        return scores, labels, bboxes
 
 
 def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_image, backbone_pretrained=False):
