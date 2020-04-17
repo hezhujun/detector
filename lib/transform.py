@@ -1,5 +1,6 @@
 import numpy as np
 from PIL import Image
+import torch
 
 
 class Resize(object):
@@ -49,3 +50,24 @@ class Resize(object):
         sample["resize"] = resize
         return sample
 
+
+class BatchCollator(object):
+
+    def __init__(self, max_objs_per_image, image_transform):
+        self.max_objs = max_objs_per_image
+        self.image_transform = image_transform
+
+    def __call__(self, samples):
+        images = torch.stack([self.image_transform(sample["img"]) for sample in samples])
+        num_samples = len(samples)
+        labels = np.full((num_samples, self.max_objs), -1, dtype=np.int64)
+        bboxes = np.full((num_samples, self.max_objs, 4), -1, dtype=np.float32)
+        for i, sample in enumerate(samples):
+            label = sample["label"]
+            bbox = sample["bbox"]
+            for j in range(min(self.max_objs, label.shape[0])):
+                labels[i, j] = label[j]
+                bboxes[i, j] = bbox[j]
+        labels = torch.from_numpy(labels)
+        bboxes = torch.from_numpy(bboxes)
+        return images, labels, bboxes, samples
