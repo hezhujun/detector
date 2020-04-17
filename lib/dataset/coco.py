@@ -15,7 +15,7 @@ class COCODataset(object):
         self.coco = COCO(annFile)
         self.ids = sorted(self.coco.getImgIds())
         if debug:
-            self.ids = self.ids[:100]
+            self.ids = self.ids[:10]
 
     def __len__(self):
         return len(self.ids)
@@ -45,3 +45,9 @@ class COCODataset(object):
 
     def parse_image_path(self, root, item):
         return os.path.join(root, item["file_name"])
+
+    @property
+    def classes(self):
+        cat_ids = sorted(self.coco.getCatIds())
+        classes_info = self.coco.loadCats(cat_ids)
+        return {int(c["id"]): c["name"] for c in classes_info}
