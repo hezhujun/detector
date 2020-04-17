@@ -10,8 +10,9 @@ class Resize(object):
         :param size: (w, h)
         :param keep_ratio:
         """
-        assert isinstance(size, tuple)
-        self.size = size
+        assert isinstance(size, (tuple, list))
+        assert len(size) == 2
+        self.size = tuple(size)
         self.keep_ratio = keep_ratio
         self.size_ratio = size[0] / size[1]
 
