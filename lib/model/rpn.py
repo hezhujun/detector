@@ -10,6 +10,7 @@ class RegionProposalNetwork(nn.Module):
 
     def __init__(self, strides, sizes, scales, ratios,
                  in_channels,
+                 image_size,
                  pre_nms_top_n_in_train, post_nms_top_n_in_train,
                  pre_nms_top_n_in_test, post_nms_top_n_in_test,
                  nms_thresh=0.7, fg_iou_thresh=0.7, bg_iou_thresh=0.3,
@@ -43,8 +44,13 @@ class RegionProposalNetwork(nn.Module):
             num_anchors = len(scales[i]) * len(ratios[i])
             # the shape of anchor is (size[0], size[1], num_anchors, 4)
             anchor = torch.from_numpy(generate_anchor(strides[i], scales[i], ratios[i], sizes[i]))
+            anchor[..., 0].clamp_(0, image_size[0])
+            anchor[..., 1].clamp_(0, image_size[1])
+            anchor[..., 2].clamp_(0, image_size[0])
+            anchor[..., 3].clamp_(0, image_size[1])
             self.register_buffer("anchor%i"%i, anchor)
 
+        self.image_size = image_size
         self.pre_nms_top_n_in_train = pre_nms_top_n_in_train
         self.post_nms_top_n_in_train = post_nms_top_n_in_train
         self.pre_nms_top_n_in_test = pre_nms_top_n_in_test
@@ -108,6 +114,10 @@ class RegionProposalNetwork(nn.Module):
             with torch.no_grad():
                 # 修正anchors
                 reg_bboxes = self.box_coder.decode(anchors, reg_pred.detach())
+                reg_bboxes[..., 0].clamp_(0, self.image_size[0])
+                reg_bboxes[..., 1].clamp_(0, self.image_size[1])
+                reg_bboxes[..., 2].clamp_(0, self.image_size[0])
+                reg_bboxes[..., 3].clamp_(0, self.image_size[1])
                 # 计算分数
                 cls_scores = torch.sigmoid(cls_pred.detach())
 
@@ -155,7 +165,15 @@ class RegionProposalNetwork(nn.Module):
             total_fg_bg_mask = []
             for i in range(BS):
                 # 为每个anchor分配label
+                areas = ops.boxes.box_area(anchors)
                 ious = ops.box_iou(anchors, gt_bboxes[i])  # (num_total_anchors, num_gt_bboxes) (N, M) for short
+                # 把nan换成0
+                zero_mask = (areas == 0).reshape(-1, 1).expand_as(ious)
+                ious[zero_mask] = 0
+
+                if torch.any(torch.isnan(ious)):
+                    raise Exception("some elements in ious is nan")
+
                 # the anchor/anchors with the highest Intersection-over-Union (IoU)
                 # overlap with a ground-truth box
                 iou_max_gt, indices = torch.max(ious, dim=0)
@@ -168,10 +186,10 @@ class RegionProposalNetwork(nn.Module):
                 # 1 for foreground -1 for background 0 for ignore
                 fg_bg_mask = torch.zeros_like(iou_max)
                 # confirm positive samples
-                fg_bg_mask = torch.where(iou_max > self.fg_iou_thresh, torch.ones_like(iou_max), fg_bg_mask)
+                fg_bg_mask = torch.where(iou_max >= self.fg_iou_thresh, torch.ones_like(iou_max), fg_bg_mask)
                 fg_bg_mask = torch.where(fg_mask, torch.ones_like(iou_max), fg_bg_mask)
                 # confirm negetive samples
-                fg_bg_mask = torch.where(iou_max < self.bg_iou_thresh, torch.full_like(iou_max, -1), fg_bg_mask)
+                fg_bg_mask = torch.where(iou_max <= self.bg_iou_thresh, torch.full_like(iou_max, -1), fg_bg_mask)
 
                 # 采样
                 indices = fg_bg_mask.argsort(descending=True)
@@ -203,13 +221,19 @@ class RegionProposalNetwork(nn.Module):
 
             cls_label = torch.where(fg_bg_mask == 1, torch.ones_like(cls_pred), torch.zeros_like(cls_pred))
             cls_loss = F.binary_cross_entropy_with_logits(cls_pred[fg_bg_mask != 0], cls_label[fg_bg_mask != 0])
+            if torch.any(torch.isnan(reg_target[fg_bg_mask == 1])):
+                raise Exception("some elements in reg_target is nan")
             reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
 
             cls_pred = torch.sigmoid(cls_pred) >= 0.5
             cls_label = cls_label == 1
-            accuracy = torch.mean((cls_label == cls_pred)[fg_bg_mask != 0].to(torch.float))
+            acc = torch.mean((cls_label == cls_pred)[fg_bg_mask != 0].to(torch.float))
+            num_pos = (fg_bg_mask == 1).sum()
+            num_neg = (fg_bg_mask == -1).sum()
             if self.logger is not None:
-                self.logger.add_scalar("rpn/acc", accuracy.detach().cpu().item())
+                self.logger.add_scalar("rpn/acc", acc.detach().cpu().item())
+                self.logger.add_scalar("rpn/num_pos", num_pos.detach().cpu().item())
+                self.logger.add_scalar("rpn/num_neg", num_neg.detach().cpu().item())
 
             return bboxes, cls_loss, reg_loss
 

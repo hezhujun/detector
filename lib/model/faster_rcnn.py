@@ -34,6 +34,7 @@ class FasterRCNN(nn.Module):
                                          scales=scales,
                                          ratios=ratios,
                                          in_channels=rpn_in_channels,
+                                         image_size=image_size,
                                          pre_nms_top_n_in_train=rpn_pre_nms_top_n_in_train,
                                          post_nms_top_n_in_train=rpn_post_nms_top_n_in_train,
                                          pre_nms_top_n_in_test=rpn_pre_nms_top_n_in_test,
@@ -82,10 +83,10 @@ class FasterRCNN(nn.Module):
         # rois shape (BS, num_rois, 4)
         rois, rpn_cls_loss, rpn_reg_loss = self.rpn(feats, labels, gt_bboxes)
 
-        rois[..., 0].clamp_(0, self.image_size[0])
-        rois[..., 1].clamp_(0, self.image_size[1])
-        rois[..., 2].clamp_(0, self.image_size[0])
-        rois[..., 3].clamp_(0, self.image_size[1])
+        # rois[..., 0].clamp_(0, self.image_size[0])
+        # rois[..., 1].clamp_(0, self.image_size[1])
+        # rois[..., 2].clamp_(0, self.image_size[0])
+        # rois[..., 3].clamp_(0, self.image_size[1])
 
         if self.training:
             # 把gt bboxes加入到rois中
@@ -111,7 +112,7 @@ class FasterRCNN(nn.Module):
 
         if len(feats) == 1:
             _, feat = feats.popitem()
-            roi_feats = roi_pooling(feat, rois, self.roi_pooling_output_size, 1/self.strides[0])
+            roi_feats = roi_pooling(feat, rois, (self.roi_pooling_output_size, self.roi_pooling_output_size), 1/self.strides[0])
         else:
             feat_levels = np.log2(self.strides).astype(np.int64)
             feat_names = [n for n in feats.keys()]
@@ -150,6 +151,7 @@ class FasterRCNN(nn.Module):
         if self.training:
             # (BS, num_rois, 5)
             rois = rois.reshape((BS, num_rois, 5))
+            rois = rois[:, :, 1:]
 
             total_cls_pred = []
             total_reg_pred = []
@@ -160,7 +162,16 @@ class FasterRCNN(nn.Module):
             for i in range(BS):
                 # 为每个anchor分配label
                 # (num_rois, num_gt_bboxes)
-                ious = ops.box_iou(rois[i][:, 1:], gt_bboxes[i])
+                areas = ops.boxes.box_area(rois[i])
+                ious = ops.box_iou(rois[i], gt_bboxes[i])
+                # rois中有box面积为0，比如(-1,-1,-1,-1)，导致ious中出现nan
+                # 把nan换成0
+                zero_mask = (areas == 0).reshape(-1, 1).expand_as(ious)
+                ious[zero_mask] = 0
+
+                if torch.any(torch.isnan(ious)):
+                    raise Exception("some elements in ious is nan")
+
                 # the anchor/anchors with the highest Intersection-over-Union (IoU)
                 # overlap with a ground-truth box
                 iou_max_gt, indices = torch.max(ious, dim=0)
@@ -173,10 +184,10 @@ class FasterRCNN(nn.Module):
                 # 1 for foreground -1 for background 0 for ignore
                 fg_bg_mask = torch.zeros_like(iou_max)
                 # confirm positive samples
-                fg_bg_mask = torch.where(iou_max > self.fg_iou_thresh, torch.ones_like(iou_max), fg_bg_mask)
+                fg_bg_mask = torch.where(iou_max >= self.fg_iou_thresh, torch.ones_like(iou_max), fg_bg_mask)
                 fg_bg_mask = torch.where(fg_mask, torch.ones_like(iou_max), fg_bg_mask)
                 # confirm negetive samples
-                fg_bg_mask = torch.where(iou_max < self.bg_iou_thresh, torch.full_like(iou_max, -1), fg_bg_mask)
+                fg_bg_mask = torch.where(iou_max <= self.bg_iou_thresh, torch.full_like(iou_max, -1), fg_bg_mask)
 
                 # 采样
                 indices = fg_bg_mask.argsort(descending=True)
@@ -191,17 +202,18 @@ class FasterRCNN(nn.Module):
                 matched_idx = matched_idx[indices]
                 # (num_samples)
                 label = labels[i][matched_idx]
-                # 把标签-1变成0，F。one_hot不支持负数
+                # 把标签-1变成0，F.one_hot不支持负数
                 _label = label.clone()
                 _label[_label == -1] = 0
                 # (num_samples, num_classes)
                 label_mask = F.one_hot(_label, self.num_classes)
 
-                # reg_pred[i][indices]: (num_samples, num_classes, 4)
-                label_mask = torch.stack([label_mask]*4, dim=2).to(torch.bool)
+                # (num_samples*num_classes,)
+                label_mask = label_mask.reshape(-1).to(torch.bool)
+                _reg_pred = reg_pred[i][indices].reshape(-1, 4)
                 # (num_samples, 4)
-                _reg_pred = reg_pred[i][indices][label_mask].reshape((-1, 4))
-                _rois = rois[i][:, 1:][indices]
+                _reg_pred = _reg_pred[label_mask]
+                _rois = rois[i][indices]
                 total_cls_pred.append(cls_pred[i][indices])
                 total_reg_pred.append(_reg_pred)
                 total_fg_bg_mask.append(fg_bg_mask)
@@ -218,7 +230,8 @@ class FasterRCNN(nn.Module):
             labels = torch.stack(total_labels)
             # (BS, num_samples, 4)
             reg_target = torch.stack(total_reg_target)
-
+            if torch.any(torch.isnan(reg_target[fg_bg_mask == 1])):
+                raise Exception("some elements in reg_target is nan")
             rcnn_reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
 
             cls_label = labels + 1  # 0 for background class
@@ -228,9 +241,13 @@ class FasterRCNN(nn.Module):
             rcnn_cls_loss = F.cross_entropy(cls_pred[fg_bg_mask != 0], cls_label[fg_bg_mask != 0])
 
             cls_pred = torch.argmax(cls_pred, dim=1)
-            accuracy = torch.mean((cls_pred == cls_label)[fg_bg_mask != 0].to(torch.float))
+            acc = torch.mean((cls_pred == cls_label)[fg_bg_mask != 0].to(torch.float))
+            num_pos = (fg_bg_mask == 1).sum()
+            num_neg = (fg_bg_mask == -1).sum()
             if self.logger is not None:
-                self.logger.add_scalar("rcnn/acc", accuracy.detach().cpu().item())
+                self.logger.add_scalar("rcnn/acc", acc.detach().cpu().item())
+                self.logger.add_scalar("rcnn/num_pos", num_pos.detach().cpu().item())
+                self.logger.add_scalar("rcnn/num_neg", num_neg.detach().cpu().item())
 
             return rpn_cls_loss, rpn_reg_loss, rcnn_cls_loss, rcnn_reg_loss
 
@@ -240,9 +257,14 @@ class FasterRCNN(nn.Module):
 
         # rois: (BS*num_rois, 5)
         # reg_pred: (BS, num_rois, num_classes, 4)
+        # _reg_pred: (num_classes, BS*num_rois, 4)
         _reg_pred = reg_pred.permute((2, 0, 1, 3)).reshape(self.num_classes, BS*num_rois, 4)
         # (num_classes, BS*num_rois, 4)
         reg_bboxes = self.box_coder.decode(rois[:, 1:], _reg_pred)
+        reg_bboxes[..., 0].clamp_(0, self.image_size[0])
+        reg_bboxes[..., 1].clamp_(0, self.image_size[1])
+        reg_bboxes[..., 2].clamp_(0, self.image_size[0])
+        reg_bboxes[..., 3].clamp_(0, self.image_size[1])
         # (BS, num_rois, num_classes, 4)
         reg_bboxes = reg_bboxes.permute((1, 0, 2)).reshape((BS, num_rois, self.num_classes, 4))
 
@@ -265,14 +287,17 @@ class FasterRCNN(nn.Module):
             _scores = torch.full((self.max_objs_per_image,), -1, dtype=cls_scores.dtype, device=cls_scores.device)
             _labels = torch.full((self.max_objs_per_image,), -1, dtype=classes_id.dtype, device=classes_id.device)
             _bboxes = torch.full((self.max_objs_per_image, 4), -1, dtype=reg_bboxes.dtype, device=reg_bboxes.device)
-            keep_mask = cls_scores[i] > self.obj_thresh
-            keep = ops.boxes.batched_nms(reg_bboxes[i][keep_mask], cls_scores[i][keep_mask], classes_id[keep_mask], self.nms_thresh)
+            keep_mask = cls_scores[i] >= self.obj_thresh
+            _reg_bboxes = reg_bboxes[i][keep_mask]
+            _cls_scores = cls_scores[i][keep_mask]
+            _classes_id = classes_id[keep_mask]
+            keep = ops.boxes.batched_nms(_reg_bboxes, _cls_scores, _classes_id, self.nms_thresh)
             n_keep = keep.shape[0]
             n_keep = min(n_keep, self.max_objs_per_image)
             keep = keep[:n_keep]
-            _scores[:n_keep] = cls_scores[i][keep]
-            _labels[:n_keep] = classes_id[keep]
-            _bboxes[:n_keep] = reg_bboxes[i][keep]
+            _scores[:n_keep] = _cls_scores[n_keep]
+            _labels[:n_keep] = _classes_id[n_keep]
+            _bboxes[:n_keep] = _reg_bboxes[n_keep]
 
             scores.append(_scores)
             labels.append(_labels)
@@ -282,11 +307,6 @@ class FasterRCNN(nn.Module):
         labels = torch.stack(labels)  # (BS, max_objs)
         bboxes = torch.stack(bboxes)  # (BS, max_objs, 4)
 
-        bboxes[..., 0].clamp_(0, self.image_size[0])
-        bboxes[..., 1].clamp_(0, self.image_size[1])
-        bboxes[..., 2].clamp_(0, self.image_size[0])
-        bboxes[..., 3].clamp_(0, self.image_size[1])
-
         return scores, labels, bboxes
 
 
@@ -294,6 +314,16 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
     resnet = models.resnet.__dict__[backbone_name](pretrained=backbone_pretrained)
     # return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
     backbone = models._utils.IntermediateLayerGetter(resnet, {'layer3': 'c4'})
+
+    if backbone_name == "resnet18" or backbone_name == "resnet34":
+        c4_channels = 256
+        c5_channels = 512
+    else:
+        c4_channels = 1024
+        c5_channels = 2048
+
+    rpn_in_channels = c4_channels  # C4的channels
+    dim_roi_features = 1024  # roi特征向量长度
 
     roi_head = nn.Sequential()
     C5 = None
@@ -303,19 +333,19 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
             roi_head.add_module("0", module)
             break
     assert C5 is not None
+
     roi_head.add_module("1", nn.modules.flatten.Flatten())
-    fc = nn.Linear(512 * 4 * 4, 1024)  # 自己计算roi_pooling后roi的特征数
+    fc = nn.Linear(c5_channels * 4 * 4, dim_roi_features)  # 自己计算roi_pooling后roi的特征数
+    # torch.nn.init.normal_(fc.weight, std=0.01)
+    # torch.nn.init.constant_(fc.bias, 0)
     roi_head.add_module("2", fc)
-    roi_head.add_module("3", nn.BatchNorm1d(1024))
+    roi_head.add_module("3", nn.BatchNorm1d(dim_roi_features))
     roi_head.add_module("4", nn.ReLU())
 
     strides = (2 ** 4,)  # C4的步长
     sizes = ((50, 50),)  # C4 feature map的大小
     scales = ((128 ** 2, 256 ** 2, 512 ** 2,),)
     ratios = ((0.5, 1, 2),)
-
-    rpn_in_channels = 256  # C4的channels
-    dim_roi_features = 1024  # roi特征向量长度
 
     return FasterRCNN(
         backbone=backbone,
@@ -331,6 +361,7 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
         max_objs_per_image=max_objs_per_image,
         roi_pooling="roi_align",
         roi_pooling_output_size=7,
+        obj_thresh=0.4,
         logger=logger,
     )
 
@@ -338,6 +369,28 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
 def faster_rcnn_resnet18(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
     return faster_rcnn_resnet(
         "resnet18",
+        image_size=image_size,
+        num_classes=num_classes,
+        max_objs_per_image=max_objs_per_image,
+        backbone_pretrained=backbone_pretrained,
+        logger=logger
+    )
+
+
+def faster_rcnn_resnet34(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+    return faster_rcnn_resnet(
+        "resnet34",
+        image_size=image_size,
+        num_classes=num_classes,
+        max_objs_per_image=max_objs_per_image,
+        backbone_pretrained=backbone_pretrained,
+        logger=logger
+    )
+
+
+def faster_rcnn_resnet50(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+    return faster_rcnn_resnet(
+        "resnet50",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
