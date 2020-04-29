@@ -201,6 +201,7 @@ class FasterRCNN(nn.Module):
                 fg_bg_mask = torch.cat([fg_mask, bg_mask], dim=0)
                 matched_idx = matched_idx[indices]
                 # (num_samples)
+                # label 暂时不考虑background
                 label = labels[i][matched_idx]
                 # 把标签-1变成0，F.one_hot不支持负数
                 _label = label.clone()
@@ -234,10 +235,12 @@ class FasterRCNN(nn.Module):
                 raise Exception("some elements in reg_target is nan")
             rcnn_reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
 
-            cls_label = labels + 1  # 0 for background class
+            cls_label = labels + 1  # 所有类别id+1，为background空出0
             cls_label = cls_label.reshape((-1,))
             cls_pred = cls_pred.reshape((-1, self.num_classes+1))
             fg_bg_mask = fg_bg_mask.reshape(-1,)
+            # 设置background的label为0
+            cls_label = torch.where(fg_bg_mask == -1, torch.zeros_like(cls_label), cls_label)
             rcnn_cls_loss = F.cross_entropy(cls_pred[fg_bg_mask != 0], cls_label[fg_bg_mask != 0])
 
             cls_pred = torch.argmax(cls_pred, dim=1)
@@ -295,9 +298,9 @@ class FasterRCNN(nn.Module):
             n_keep = keep.shape[0]
             n_keep = min(n_keep, self.max_objs_per_image)
             keep = keep[:n_keep]
-            _scores[:n_keep] = _cls_scores[n_keep]
-            _labels[:n_keep] = _classes_id[n_keep]
-            _bboxes[:n_keep] = _reg_bboxes[n_keep]
+            _scores[:n_keep] = _cls_scores[keep]
+            _labels[:n_keep] = _classes_id[keep]
+            _bboxes[:n_keep] = _reg_bboxes[keep]
 
             scores.append(_scores)
             labels.append(_labels)
