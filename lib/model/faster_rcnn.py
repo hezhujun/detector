@@ -1,3 +1,5 @@
+from math import ceil
+
 import torch
 import numpy as np
 from collections import OrderedDict
@@ -318,12 +320,9 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
     # return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
     backbone = models._utils.IntermediateLayerGetter(resnet, {'layer3': 'c4'})
 
-    if backbone_name == "resnet18" or backbone_name == "resnet34":
-        c4_channels = 256
-        c5_channels = 512
-    else:
-        c4_channels = 1024
-        c5_channels = 2048
+    roi_pooling_output_size = 7
+    c4_channels = resnet.inplanes // 2
+    c5_channels = resnet.inplanes
 
     rpn_in_channels = c4_channels  # C4的channels
     dim_roi_features = 1024  # roi特征向量长度
@@ -338,9 +337,8 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
     assert C5 is not None
 
     roi_head.add_module("1", nn.modules.flatten.Flatten())
-    fc = nn.Linear(c5_channels * 4 * 4, dim_roi_features)  # 自己计算roi_pooling后roi的特征数
-    # torch.nn.init.normal_(fc.weight, std=0.01)
-    # torch.nn.init.constant_(fc.bias, 0)
+    _in_features = c5_channels * ceil(roi_pooling_output_size / 2) ** 2
+    fc = nn.Linear(_in_features, dim_roi_features)
     roi_head.add_module("2", fc)
     roi_head.add_module("3", nn.BatchNorm1d(dim_roi_features))
     roi_head.add_module("4", nn.ReLU())
@@ -363,7 +361,7 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
         rpn_in_channels=rpn_in_channels,
         max_objs_per_image=max_objs_per_image,
         roi_pooling="roi_align",
-        roi_pooling_output_size=7,
+        roi_pooling_output_size=roi_pooling_output_size,
         obj_thresh=0.4,
         logger=logger,
     )
@@ -394,6 +392,63 @@ def faster_rcnn_resnet34(image_size, num_classes, max_objs_per_image, backbone_p
 def faster_rcnn_resnet50(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
     return faster_rcnn_resnet(
         "resnet50",
+        image_size=image_size,
+        num_classes=num_classes,
+        max_objs_per_image=max_objs_per_image,
+        backbone_pretrained=backbone_pretrained,
+        logger=logger
+    )
+
+
+def faster_rcnn_resnet_fpn(backbone_name, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+    resnet = models.resnet.__dict__[backbone_name](pretrained=backbone_pretrained)
+    return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
+    in_channels_stage2 = resnet.inplanes // 8
+    in_channels_list = [
+        in_channels_stage2,
+        in_channels_stage2 * 2,
+        in_channels_stage2 * 4,
+        in_channels_stage2 * 8,
+    ]
+    out_channels = 256
+    from torchvision.models.detection.backbone_utils import BackboneWithFPN
+    backbone = BackboneWithFPN(resnet, return_layers, in_channels_list, out_channels)
+
+    rpn_in_channels = out_channels
+    roi_pooling_output_size = 7
+    dim_roi_features = 1024  # roi特征向量长度
+
+    from torchvision.models.detection.faster_rcnn import TwoMLPHead
+    roi_head = TwoMLPHead(out_channels * roi_pooling_output_size ** 2, dim_roi_features)
+
+    strides = (2 ** 2, 2 ** 3, 2 ** 4, 2 ** 5, 2 ** 6)  # P* 的步长
+    sizes = [(ceil(image_size[0] / i), ceil(image_size[0] / i)) for i in strides]
+    sizes = tuple(sizes)
+    scales = ((32 ** 2,), (64 ** 2,), (128 ** 2,), (256 ** 2,), (512 ** 2,))
+    ratios = ((0.5, 1, 2),) * len(scales)
+
+    return FasterRCNN(
+        backbone=backbone,
+        roi_head=roi_head,
+        dim_roi_features=dim_roi_features,
+        image_size=image_size,
+        num_classes=num_classes,
+        strides=strides,
+        sizes=sizes,
+        scales=scales,
+        ratios=ratios,
+        rpn_in_channels=rpn_in_channels,
+        max_objs_per_image=max_objs_per_image,
+        roi_pooling="roi_align",
+        roi_pooling_output_size=roi_pooling_output_size,
+        obj_thresh=0.1,
+        logger=logger,
+    )
+
+
+def faster_rcnn_resnet34_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+    return faster_rcnn_resnet_fpn(
+        "resnet34",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
