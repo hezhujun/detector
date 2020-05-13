@@ -1,0 +1,29 @@
+dataset:
+  train_data:
+    root: /var/www/nextcloud/data/dbc2017/files/PennFudanPed
+    annFile: /var/www/nextcloud/data/dbc2017/files/PennFudanPed/annotations/PennFudanPed.json
+  val_data:
+    root: /var/www/nextcloud/data/dbc2017/files/PennFudanPed
+    annFile: /var/www/nextcloud/data/dbc2017/files/PennFudanPed/annotations/PennFudanPed.json
+  test_data:
+    root: /var/www/nextcloud/data/dbc2017/files/PennFudanPed
+    annFile: /var/www/nextcloud/data/dbc2017/files/PennFudanPed/annotations/PennFudanPed.json
+  resize: [800, 800]
+  max_objs_per_image: 10
+  batch_size: 2
+  num_works: 8
+
+model:
+  name: faster_rcnn_resnet50
+  backbone_pertrained: true
+  load_from: ~  #使用~表示null
+
+train:
+  log: work_dir/log
+  checkpoint: work_dir/checkpoint
+  epochs: 8
+  lr: 0.001
+  gpus: [0,]
+  resume_from: ~
+
+debug: False

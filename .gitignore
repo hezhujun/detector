@@ -1,4 +1,16 @@
 .idea
 
+work_dir
+
 test.py
+test0.py
+test1.py
+test2.py
+test3.py
 test
+
+lib/debug.py
+
+cfg.yaml
+cfg-local.yaml
+coco-local.yaml
