@@ -1,6 +1,17 @@
+import random
 import numpy as np
 from PIL import Image
 import torch
+
+
+class Compose(object):
+    def __init__(self, transforms):
+        self.transforms = list(transforms)
+
+    def __call__(self, sample):
+        for transform in self.transforms:
+            sample = transform(sample)
+        return sample
 
 
 class Resize(object):
@@ -49,6 +60,50 @@ class Resize(object):
         sample["bbox"] = bbox
         sample["size"] = size
         sample["resize"] = resize
+        return sample
+
+
+class FlipLeftRight(object):
+
+    def __init__(self, ratio=0.5):
+        self.ratio = ratio
+
+    def __call__(self, sample):
+        if random.random() < self.ratio:
+            img = sample["img"]
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+            size = img.size
+            size = np.array([size[0], size[1], size[0], size[1]])
+            bbox = sample["bbox"]
+            bbox[:, 0] = size[0] - bbox[:, 0] - 1
+            bbox[:, 2] = size[0] - bbox[:, 2] - 1
+            sample["img"] = img
+            sample["bbox"] = bbox
+            sample["flip_left_right"] = True
+        else:
+            sample["flip_left_right"] = False
+        return sample
+
+
+class FlipTopBottom(object):
+
+    def __init__(self, ratio=0.5):
+        self.ratio = ratio
+
+    def __call__(self, sample):
+        if random.random() < self.ratio:
+            img = sample["img"]
+            img = img.transpose(Image.FLIP_TOP_BOTTOM)
+            size = img.size
+            size = np.array([size[0], size[1], size[0], size[1]])
+            bbox = sample["bbox"]
+            bbox[:, 1] = size[1] - bbox[:, 1] - 1
+            bbox[:, 3] = size[1] - bbox[:, 3] - 1
+            sample["img"] = img
+            sample["bbox"] = bbox
+            sample["flip_top_bottom"] = True
+        else:
+            sample["flip_top_bottom"] = False
         return sample
 
 
