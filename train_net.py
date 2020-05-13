@@ -15,12 +15,15 @@ import torch.optim.lr_scheduler as lr_scheduler
 import os
 from torch.utils.tensorboard import SummaryWriter
 from lib.util import WarmingUpScheduler
+from lib.util import SummaryWriterWrap
 
 
 @torch.no_grad()
 def evaluate(net, dataloader, device):
     results = []
     net.eval()
+    dataset = dataloader.dataset
+    class_transform = dataset.class_transform
     for images, labels, bboxes, samples in dataloader:
         images = images.to(device)
 
@@ -44,7 +47,7 @@ def evaluate(net, dataloader, device):
 
                 results_per_image.append({
                     "image_id": samples[i]["image_id"],
-                    "category_id": int(label),
+                    "category_id": class_transform.decode(int(label)),
                     "score": float(score),
                     "bbox": [x1, y1, x2 - x1, y2 - y1],
                 })
@@ -120,19 +123,26 @@ if __name__ == '__main__':
 
     print(cfg)
 
-    resize = Resize(cfg["dataset"]["resize"])
-    dataset = COCODataset(cfg["dataset"]["root"], cfg["dataset"]["annFile"], resize, debug=cfg["debug"])
     image_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
     ])
-    dataloader = DataLoader(dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=False,
+    resize = Resize(cfg["dataset"]["resize"])
+    train_data = cfg["dataset"]["train_data"]
+    train_dataset = COCODataset(train_data["root"], train_data["annFile"], resize, debug=cfg["debug"])
+    num_classes = max(train_dataset.classes.keys()) + 1
+    train_dataloader = DataLoader(train_dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=True,
                             collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
 
-    writer = SummaryWriter(log_dir)
+    val_data = cfg["dataset"]["val_data"]
+    val_dataset = COCODataset(val_data["root"], val_data["annFile"], resize, debug=cfg["debug"])
+    val_dataloader = DataLoader(val_dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=False,
+                                collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
+
+    writer = SummaryWriterWrap(log_dir)
     faster_rcnn = lib.model.faster_rcnn.__dict__[cfg["model"]["name"]](
         image_size=cfg["dataset"]["resize"],
-        num_classes=max(dataset.classes.keys()) + 1,
+        num_classes=num_classes,
         max_objs_per_image=cfg["dataset"]["max_objs_per_image"],
         backbone_pretrained=cfg["model"]["backbone_pertrained"],
         logger=writer,
@@ -161,7 +171,7 @@ if __name__ == '__main__':
     faster_rcnn = faster_rcnn.to(device)
 
     optimizer = optim.SGD(faster_rcnn.parameters(), lr=cfg["train"]["lr"], weight_decay=1e-4)
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[8, 10])
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[5, 7])
     warmup_scheduler = WarmingUpScheduler(optimizer, init_factor=0.1, steps=100)
     epochs = cfg["train"]["epochs"]
     epoch = 0
@@ -172,12 +182,14 @@ if __name__ == '__main__':
         scheduler.load_state_dict(state_dict["scheduler"])
         epoch = state_dict["epoch"] + 1
 
-    iters_per_epoch = len(dataloader)
+    iters_per_epoch = len(train_dataloader)
     iter_width = len(str(iters_per_epoch))
     for epoch in range(epoch, epochs):
         faster_rcnn.train()
         iteration = 0
-        for images, labels, bboxes, _ in dataloader:
+        for images, labels, bboxes, _ in train_dataloader:
+            writer.step(epoch * iters_per_epoch + iteration)
+
             images = images.to(device)
             labels = labels.to(device)
             bboxes = bboxes.to(device)
@@ -209,7 +221,7 @@ if __name__ == '__main__':
             log_string += "rcnn_cls_loss {:6.4f} rcnn_reg_loss {:6.4f} "
             log_string += "total_loss {:6.4f}"
             print(log_string.format(
-                epoch, iteration, len(dataloader),
+                epoch, iteration, len(train_dataloader),
                 _lr,
                 rpn_cls_loss,
                 rpn_reg_loss,
@@ -232,6 +244,6 @@ if __name__ == '__main__':
         torch.save(save_dict, sym_path)  # 软连接方式出错
         writer.flush()
 
-        evaluate(faster_rcnn, dataloader, device)
+        evaluate(faster_rcnn, val_dataloader, device)
 
     writer.close()

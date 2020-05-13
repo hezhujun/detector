@@ -20,6 +20,8 @@ from torch.utils.tensorboard import SummaryWriter
 def evaluate(net, dataloader, device):
     results = []
     net.eval()
+    dataset = dataloader.dataset
+    class_transform = dataset.class_transform
     for images, labels, bboxes, samples in dataloader:
         images = images.to(device)
 
@@ -43,7 +45,7 @@ def evaluate(net, dataloader, device):
 
                 results_per_image.append({
                     "image_id": samples[i]["image_id"],
-                    "category_id": int(label),
+                    "category_id": class_transform.decode(int(label)),
                     "score": float(score),
                     "bbox": [x1, y1, x2 - x1, y2 - y1],
                 })
@@ -120,7 +122,8 @@ if __name__ == '__main__':
     print(cfg)
 
     resize = Resize(cfg["dataset"]["resize"])
-    dataset = COCODataset(cfg["dataset"]["root"], cfg["dataset"]["annFile"], resize, debug=cfg["debug"])
+    test_data = cfg["dataset"]["train_data"]
+    dataset = COCODataset(test_data["root"], test_data["annFile"], resize, debug=cfg["debug"])
     image_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
