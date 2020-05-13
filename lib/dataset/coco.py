@@ -1,7 +1,29 @@
 import os
 import numpy as np
 from PIL import Image
+from collections import OrderedDict
 from pycocotools.coco import COCO
+
+
+class ClassTransform(object):
+
+    def encode(self, class_id):
+        raise NotImplementedError()
+
+    def decode(self, class_id):
+        raise NotImplementedError()
+
+
+class ClassTransformImpl(ClassTransform):
+    def __init__(self, classe_ids:list):
+        self.map = {class_id:i for i, class_id in enumerate(classe_ids)}
+        self.map_reverse = {v:k for k,v in self.map.items()}
+
+    def encode(self, class_id):
+        return self.map[class_id]
+
+    def decode(self, class_id):
+        return self.map_reverse[class_id]
 
 
 class COCODataset(object):
@@ -17,6 +39,8 @@ class COCODataset(object):
         if debug:
             self.ids = self.ids[:10]
 
+        self.class_transform = ClassTransformImpl(sorted(self.coco.getCatIds()))
+
     def __len__(self):
         return len(self.ids)
 
@@ -30,13 +54,14 @@ class COCODataset(object):
         ann_ids = self.coco.getAnnIds(imgIds=image_id)
         anns = self.coco.loadAnns(ann_ids)
         for ann in anns:
-            label.append(ann["category_id"])
+            class_id = self.class_transform.encode(ann["category_id"])
+            label.append(class_id)
             x1, y1, w, h = ann["bbox"]
             bbox.append([x1, y1, x1 + w, y1 + h])
 
         label = np.array(label)
         bbox = np.array(bbox)
-        sample = {"image_id": image_id, "img": img, "label": label, "bbox": bbox}
+        sample = OrderedDict(image_id=image_id, img=img, label=label, bbox=bbox)
 
         if self.transform is not None:
             return self.transform(sample)
