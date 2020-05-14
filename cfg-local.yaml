@@ -1,26 +1,28 @@
 dataset:
   train_data:
-    root: E:\dataset\PennFudanPed
-    annFile: E:\dataset\PennFudanPed\annotations\PennFudanPed.json
+    root: /run/media/hezhujun/DATA1/Document/dataset/PennFudanPed
+    annFile: /run/media/hezhujun/DATA1/Document/dataset/PennFudanPed/annotations/PennFudanPed.json
   val_data:
-    root: E:\dataset\PennFudanPed
-    annFile: E:\dataset\PennFudanPed\annotations\PennFudanPed.json
+    root: /run/media/hezhujun/DATA1/Document/dataset/PennFudanPed
+    annFile: /run/media/hezhujun/DATA1/Document/dataset/PennFudanPed/annotations/PennFudanPed.json
   test_data:
-    root: E:\dataset\PennFudanPed
-    annFile: E:\dataset\PennFudanPed\annotations\PennFudanPed.json
+    root: /run/media/hezhujun/DATA1/Document/dataset/PennFudanPed
+    annFile: /run/media/hezhujun/DATA1/Document/dataset/PennFudanPed/annotations/PennFudanPed.json
   resize: [800, 800]
   max_objs_per_image: 10
   batch_size: 1
   num_works: 2
 
 model:
-  name: faster_rcnn_resnet34
+  name: faster_rcnn_resnet50_fpn
   backbone_pertrained: False
-  load_from: ~  # 使用~表示null
+  obj_thresh: 0.4
+  load_from: /tmp/model/checkpoint-latest.pth
 
 train:
   log: work_dir/log
   checkpoint: work_dir/checkpoint
+  log_every_step: 1
   epochs: 12
   lr: 0.001
   gpus: ~

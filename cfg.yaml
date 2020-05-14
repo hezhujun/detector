@@ -1,28 +1,30 @@
 dataset:
   train_data:
-    root: /var/www/nextcloud/data/dbc2017/files/PennFudanPed
-    annFile: /var/www/nextcloud/data/dbc2017/files/PennFudanPed/annotations/PennFudanPed.json
+    root: /root/userfolder/datasets/PennFudanPed
+    annFile: /root/userfolder/datasets/PennFudanPed/annotations/PennFudanPed.json
   val_data:
-    root: /var/www/nextcloud/data/dbc2017/files/PennFudanPed
-    annFile: /var/www/nextcloud/data/dbc2017/files/PennFudanPed/annotations/PennFudanPed.json
+    root: /root/userfolder/datasets/PennFudanPed
+    annFile: /root/userfolder/datasets/PennFudanPed/annotations/PennFudanPed.json
   test_data:
-    root: /var/www/nextcloud/data/dbc2017/files/PennFudanPed
-    annFile: /var/www/nextcloud/data/dbc2017/files/PennFudanPed/annotations/PennFudanPed.json
+    root: /root/userfolder/datasets/PennFudanPed
+    annFile: /root/userfolder/datasets/PennFudanPed/annotations/PennFudanPed.json
   resize: [800, 800]
   max_objs_per_image: 10
   batch_size: 2
   num_works: 8
 
 model:
-  name: faster_rcnn_resnet50
+  name: faster_rcnn_resnet50_fpn
   backbone_pertrained: true
-  load_from: ~  #使用~表示null
+  obj_thresh: 0.4
+  load_from: ~
 
 train:
   log: work_dir/log
   checkpoint: work_dir/checkpoint
-  epochs: 8
-  lr: 0.001
+  log_every_step: 1
+  epochs: 12
+  lr: 0.005
   gpus: [0,]
   resume_from: ~
 
