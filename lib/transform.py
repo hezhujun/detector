@@ -32,15 +32,16 @@ class Resize(object):
         label = sample["label"]
         bbox = sample["bbox"]
         size = img.size
+        img_ratio = size[0] / size[1]
 
         if not self.keep_ratio:
             img = img.resize(self.size)
         else:
             new_w, new_h = self.size
-            if self.size_ratio > (size[0] / size[1]):
-                new_w = size[1] * self.size_ratio
+            if self.size_ratio > img_ratio:
+                new_w = new_h * img_ratio
             else:
-                new_h = size[0] / self.size_ratio
+                new_h = new_w / img_ratio
             new_w, new_h = int(new_w), int(new_h)
             img = img.resize((new_w, new_h))
 
