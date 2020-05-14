@@ -25,7 +25,7 @@ def evaluate(net, dataloader, device):
     for images, labels, bboxes, samples in dataloader:
         images = images.to(device)
 
-        scores, labels, bboxes = faster_rcnn(images, None, None)
+        scores, labels, bboxes = net(images, None, None)
         scores = scores.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
         bboxes = bboxes.detach().cpu().numpy()
@@ -129,11 +129,12 @@ if __name__ == '__main__':
         transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
     ])
     dataloader = DataLoader(dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=False,
+                                  num_workers=cfg["dataset"]["num_works"],
                             collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
 
     faster_rcnn = lib.model.faster_rcnn.__dict__[cfg["model"]["name"]](
         image_size=cfg["dataset"]["resize"],
-        num_classes=max(dataset.classes.keys()) + 1,
+        num_classes=len(dataset.classes.keys()),
         max_objs_per_image=cfg["dataset"]["max_objs_per_image"],
         backbone_pretrained=cfg["model"]["backbone_pertrained"],
         logger=None,

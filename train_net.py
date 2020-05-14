@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from lib.dataset.coco import COCODataset
-from lib.transform import Resize, BatchCollator
+from lib.transform import Resize, BatchCollator, Compose, FlipLeftRight
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 import lib
@@ -27,7 +27,7 @@ def evaluate(net, dataloader, device):
     for images, labels, bboxes, samples in dataloader:
         images = images.to(device)
 
-        scores, labels, bboxes = faster_rcnn(images, None, None)
+        scores, labels, bboxes = net(images, None, None)
         scores = scores.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
         bboxes = bboxes.detach().cpu().numpy()
@@ -51,9 +51,9 @@ def evaluate(net, dataloader, device):
                     "score": float(score),
                     "bbox": [x1, y1, x2 - x1, y2 - y1],
                 })
-            print("image {} {} objs {} detected".format(
-                samples[i]["image_id"], len(samples[i]["label"]), len(results_per_image)))
-            print(results_per_image)
+            # print("image {} {} objs {} detected".format(
+            #     samples[i]["image_id"], len(samples[i]["label"]), len(results_per_image)))
+            # print(results_per_image)
             results.extend(results_per_image)
 
     if len(results) > 0:
@@ -127,16 +127,24 @@ if __name__ == '__main__':
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
     ])
-    resize = Resize(cfg["dataset"]["resize"])
+    train_transform = Compose([
+        Resize(cfg["dataset"]["resize"]),
+        # FlipLeftRight(),
+    ])
+    val_transform = Compose([
+        Resize(cfg["dataset"]["resize"]),
+    ])
     train_data = cfg["dataset"]["train_data"]
-    train_dataset = COCODataset(train_data["root"], train_data["annFile"], resize, debug=cfg["debug"])
-    num_classes = max(train_dataset.classes.keys()) + 1
+    train_dataset = COCODataset(train_data["root"], train_data["annFile"], train_transform, debug=cfg["debug"])
+    num_classes = len(train_dataset.classes.keys())
     train_dataloader = DataLoader(train_dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=True,
+                                  num_workers=cfg["dataset"]["num_works"],
                             collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
 
     val_data = cfg["dataset"]["val_data"]
-    val_dataset = COCODataset(val_data["root"], val_data["annFile"], resize, debug=cfg["debug"])
+    val_dataset = COCODataset(val_data["root"], val_data["annFile"], val_transform, debug=cfg["debug"])
     val_dataloader = DataLoader(val_dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=False,
+                                  num_workers=cfg["dataset"]["num_works"],
                                 collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
 
     writer = SummaryWriterWrap(log_dir)
@@ -146,6 +154,7 @@ if __name__ == '__main__':
         max_objs_per_image=cfg["dataset"]["max_objs_per_image"],
         backbone_pretrained=cfg["model"]["backbone_pertrained"],
         logger=writer,
+        obj_thresh=cfg["model"]["obj_thresh"],
     )
 
     if cfg["model"]["load_from"] is not None and cfg["model"]["load_from"] != "":
@@ -170,8 +179,17 @@ if __name__ == '__main__':
 
     faster_rcnn = faster_rcnn.to(device)
 
-    optimizer = optim.SGD(faster_rcnn.parameters(), lr=cfg["train"]["lr"], weight_decay=1e-4)
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[5, 7])
+    # optimizer = optim.SGD(faster_rcnn.parameters(), lr=cfg["train"]["lr"], weight_decay=1e-4)
+    optimizer = optim.SGD([
+        {"params": faster_rcnn.backbone.parameters()},
+        {"params": faster_rcnn.rpn.conv.parameters()},
+        {"params": faster_rcnn.rpn.cls.parameters()},
+        {"params": faster_rcnn.rpn.reg.parameters(), "lr": 0.001},
+        {"params": faster_rcnn.roi_head.parameters()},
+        {"params": faster_rcnn.cls.parameters()},
+        {"params": faster_rcnn.reg.parameters(), "lr": 0.001},
+    ], lr=cfg["train"]["lr"], weight_decay=1e-4)
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[8, 10])
     warmup_scheduler = WarmingUpScheduler(optimizer, init_factor=0.1, steps=100)
     epochs = cfg["train"]["epochs"]
     epoch = 0
@@ -215,20 +233,21 @@ if __name__ == '__main__':
             writer.add_scalar("rcnn/reg_loss", rcnn_reg_loss)
             writer.add_scalar("total_loss", total_loss)
 
-            log_string = "epoch {:03} iter {:0" + str(iter_width) + "}/{} "
-            log_string += "lr {:0.6f} "
-            log_string += "rpn_cls_loss {:6.4f} rpn_reg_loss {:6.4f} "
-            log_string += "rcnn_cls_loss {:6.4f} rcnn_reg_loss {:6.4f} "
-            log_string += "total_loss {:6.4f}"
-            print(log_string.format(
-                epoch, iteration, len(train_dataloader),
-                _lr,
-                rpn_cls_loss,
-                rpn_reg_loss,
-                rcnn_cls_loss,
-                rcnn_reg_loss,
-                total_loss,
-            ))
+            if iteration % cfg["train"]["log_every_step"] == 0:
+                log_string = "epoch {:03} iter {:0" + str(iter_width) + "}/{} "
+                log_string += "lr {:0.6f} "
+                log_string += "rpn_cls_loss {:6.4f} rpn_reg_loss {:6.4f} "
+                log_string += "rcnn_cls_loss {:6.4f} rcnn_reg_loss {:6.4f} "
+                log_string += "total_loss {:6.4f}"
+                print(log_string.format(
+                    epoch, iteration, len(train_dataloader),
+                    _lr,
+                    rpn_cls_loss,
+                    rpn_reg_loss,
+                    rcnn_cls_loss,
+                    rcnn_reg_loss,
+                    total_loss,
+                ))
             iteration += 1
 
         save_dict = {
