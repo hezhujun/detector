@@ -15,6 +15,7 @@ class RegionProposalNetwork(nn.Module):
                  pre_nms_top_n_in_test, post_nms_top_n_in_test,
                  nms_thresh=0.7, fg_iou_thresh=0.7, bg_iou_thresh=0.3,
                  num_samples=256, positive_fraction=0.5,
+                 nms_per_layer=True,
                  logger=None):
         """
         strides: tuple, 步长，每个步长对应一个特征层，如
@@ -31,6 +32,9 @@ class RegionProposalNetwork(nn.Module):
         ratios: tuple, 宽高比，分别对应一个特征层，如
             ((0.5, 1, 2),(0.5, 1, 2),(0.5, 1, 2),(0.5, 1, 2),(0.5, 1, 2))
             每个特征层只有3中宽高比
+
+        nms_per_layer: 是否在每个特征层上进行nms。如果不是fine-tune，训练初期分类器弱，nms得到的rois可能都属于同一层特种层，
+            rois的尺度空间变化小。比如，rois都是来自p2层。
         """
         super(RegionProposalNetwork, self).__init__()
 
@@ -63,6 +67,7 @@ class RegionProposalNetwork(nn.Module):
         self.num_pos = int(num_samples * positive_fraction)
         self.num_neg = num_samples - self.num_pos
         self.logger = logger
+        self.nms_per_layer = nms_per_layer
 
         self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
         self.cls = nn.Conv2d(in_channels, num_anchors, kernel_size=1, stride=1)
@@ -82,6 +87,14 @@ class RegionProposalNetwork(nn.Module):
         :param gt_bboxes: shape (BS, n_objs, 4)
         :return:
         """
+
+        if self.training:
+            pre_nms_top_n = self.pre_nms_top_n_in_train
+            post_nms_top_n = self.post_nms_top_n_in_train
+        else:
+            pre_nms_top_n = self.pre_nms_top_n_in_test
+            post_nms_top_n = self.post_nms_top_n_in_test
+
         total_anchors = []
         total_cls_pred = []
         total_reg_pred = []
@@ -121,8 +134,25 @@ class RegionProposalNetwork(nn.Module):
                 # 计算分数
                 cls_scores = torch.sigmoid(cls_pred.detach())
 
-                total_cls_scores.append(cls_scores)
-                total_reg_bboxes.append(reg_bboxes)
+                if not self.nms_per_layer:
+                    total_cls_scores.append(cls_scores)
+                    total_reg_bboxes.append(reg_bboxes)
+                else:
+                    # NMS per layer
+                    BS = cls_scores.shape[0]
+                    keep_bboxes = []
+                    for i in range(BS):
+                        dtype = reg_bboxes.dtype
+                        device = reg_bboxes.device
+                        _bboxes = torch.full((post_nms_top_n//len(features), 4), -1, dtype=dtype, device=device)
+                        keep = ops.nms(reg_bboxes[i], cls_scores[i], self.nms_thresh)
+                        n_keep = keep.shape[0]
+                        n_keep = min(n_keep, post_nms_top_n//len(features))
+                        keep = keep[:n_keep]
+                        _bboxes[:n_keep] = reg_bboxes[i][keep]
+                        keep_bboxes.append(_bboxes)
+
+                    total_reg_bboxes.append(torch.stack(keep_bboxes))
 
         # (-1, 4)
         anchors = torch.cat(total_anchors, dim=0)
@@ -130,33 +160,30 @@ class RegionProposalNetwork(nn.Module):
         cls_pred = torch.cat(total_cls_pred, dim=1)
         # (BS, -1, 4)
         reg_pred = torch.cat(total_reg_pred, dim=1)
-        # (BS, -1)
-        cls_scores = torch.cat(total_cls_scores, dim=1)
-        # (BS, -1, 4)
-        reg_bboxes = torch.cat(total_reg_bboxes, dim=1)
 
-        if self.training:
-            pre_nms_top_n = self.pre_nms_top_n_in_train
-            post_nms_top_n = self.post_nms_top_n_in_train
+        if not self.nms_per_layer:
+            # (BS, -1)
+            cls_scores = torch.cat(total_cls_scores, dim=1)
+            # (BS, -1, 4)
+            reg_bboxes = torch.cat(total_reg_bboxes, dim=1)
+
+            # NMS
+            BS = cls_pred.shape[0]
+            keep_bboxes = []
+            for i in range(BS):
+                dtype = reg_bboxes.dtype
+                device = reg_bboxes.device
+                _bboxes = torch.full((post_nms_top_n, 4), -1, dtype=dtype, device=device)
+                keep = ops.nms(reg_bboxes[i], cls_scores[i], self.nms_thresh)
+                n_keep = keep.shape[0]
+                n_keep = min(n_keep, post_nms_top_n)
+                keep = keep[:n_keep]
+                _bboxes[:n_keep] = reg_bboxes[i][keep]
+                keep_bboxes.append(_bboxes)
+
+            bboxes = torch.stack(keep_bboxes)  # (BS, post_nms_top_n, 4)
         else:
-            pre_nms_top_n = self.pre_nms_top_n_in_test
-            post_nms_top_n = self.post_nms_top_n_in_test
-
-        # NMS
-        BS = cls_pred.shape[0]
-        keep_bboxes = []
-        for i in range(BS):
-            dtype = reg_bboxes.dtype
-            device = reg_bboxes.device
-            _bboxes = torch.full((post_nms_top_n, 4), -1, dtype=dtype, device=device)
-            keep = ops.nms(reg_bboxes[i], cls_scores[i], self.nms_thresh)
-            n_keep = keep.shape[0]
-            n_keep = min(n_keep, post_nms_top_n)
-            keep = keep[:n_keep]
-            _bboxes[:n_keep] = reg_bboxes[i][keep]
-            keep_bboxes.append(_bboxes)
-
-        bboxes = torch.stack(keep_bboxes)  # (BS, post_nms_top_n, 4)
+            bboxes = torch.cat(total_reg_bboxes, dim=1)
 
         if self.training:
             total_cls_pred = []
@@ -209,6 +236,10 @@ class RegionProposalNetwork(nn.Module):
                 total_reg_pred.append(reg_pred[i][indices])
                 total_fg_bg_mask.append(fg_bg_mask)
                 total_reg_target.append(self.box_coder.encode(_anchors, gt_bboxes[i][matched_idx]))
+
+                # from lib import debug
+                # debug.rpn_pos_bboxes.append(_anchors[fg_bg_mask == 1])
+                # print(cls_pred[i][indices][fg_bg_mask == 1].detach().cpu().numpy())
 
             # (BS, num_samples)
             cls_pred = torch.stack(total_cls_pred)

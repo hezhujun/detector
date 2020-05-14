@@ -23,6 +23,7 @@ class FasterRCNN(nn.Module):
                  rpn_pre_nms_top_n_in_test=2000, rpn_post_nms_top_n_in_test=1000,
                  rpn_nms_thresh=0.7, rpn_fg_iou_thresh=0.7, rpn_bg_iou_thresh=0.3,
                  rpn_num_samples=256, rpn_positive_fraction=0.5,
+                 rpn_nms_per_layer=True,
                  roi_pooling="roi_align", roi_pooling_output_size=7,
                  nms_thresh=0.5, fg_iou_thresh=0.5, bg_iou_thresh=0.5,
                  num_samples=128, positive_fraction=0.25,
@@ -46,6 +47,7 @@ class FasterRCNN(nn.Module):
                                          bg_iou_thresh=rpn_bg_iou_thresh,
                                          num_samples=rpn_num_samples,
                                          positive_fraction=rpn_positive_fraction,
+                                         nms_per_layer=rpn_nms_per_layer,
                                          logger=logger)
         self.roi_head = roi_head
         self.cls = nn.Linear(dim_roi_features, num_classes + 1)
@@ -90,6 +92,9 @@ class FasterRCNN(nn.Module):
         # rois[..., 2].clamp_(0, self.image_size[0])
         # rois[..., 3].clamp_(0, self.image_size[1])
 
+        # from lib import debug
+        # debug.rois.append(rois)
+
         if self.training:
             # 把gt bboxes加入到rois中
             rois = torch.cat([rois, gt_bboxes], dim=1)
@@ -133,7 +138,7 @@ class FasterRCNN(nn.Module):
 
             for i, (feat_level, feat_name) in enumerate(zip(feat_levels, feat_names)):
                 mask_in_level = roi_levels == feat_level
-                _roi_feats = roi_pooling(feats[feat_name], rois[mask_in_level], self.roi_pooling_output_size, 1/self.strides[i])
+                _roi_feats = roi_pooling(feats[feat_name], rois[mask_in_level], (self.roi_pooling_output_size, self.roi_pooling_output_size), 1/self.strides[i])
                 roi_feats[mask_in_level] = _roi_feats
 
         # roi_feats shape (BS*num_rois, C, self.roi_pooling_output_size, self.roi_pooling_output_size)
@@ -315,7 +320,9 @@ class FasterRCNN(nn.Module):
         return scores, labels, bboxes
 
 
-def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+def faster_rcnn_resnet(
+        backbone_name, image_size, num_classes, max_objs_per_image,
+        backbone_pretrained=False, logger=None, obj_thresh=0.1):
     resnet = models.resnet.__dict__[backbone_name](pretrained=backbone_pretrained)
     # return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
     backbone = models._utils.IntermediateLayerGetter(resnet, {'layer3': 'c4'})
@@ -362,45 +369,50 @@ def faster_rcnn_resnet(backbone_name, image_size, num_classes, max_objs_per_imag
         max_objs_per_image=max_objs_per_image,
         roi_pooling="roi_align",
         roi_pooling_output_size=roi_pooling_output_size,
-        obj_thresh=0.4,
+        obj_thresh=obj_thresh,
         logger=logger,
     )
 
 
-def faster_rcnn_resnet18(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+def faster_rcnn_resnet18(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet(
         "resnet18",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
         backbone_pretrained=backbone_pretrained,
-        logger=logger
+        logger=logger,
+        obj_thresh=obj_thresh,
     )
 
 
-def faster_rcnn_resnet34(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+def faster_rcnn_resnet34(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet(
         "resnet34",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
         backbone_pretrained=backbone_pretrained,
-        logger=logger
+        logger=logger,
+        obj_thresh=obj_thresh,
     )
 
 
-def faster_rcnn_resnet50(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+def faster_rcnn_resnet50(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet(
         "resnet50",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
         backbone_pretrained=backbone_pretrained,
-        logger=logger
+        logger=logger,
+        obj_thresh=obj_thresh,
     )
 
 
-def faster_rcnn_resnet_fpn(backbone_name, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+def faster_rcnn_resnet_fpn(
+        backbone_name, image_size, num_classes, max_objs_per_image,
+        backbone_pretrained=False, logger=None, obj_thresh=0.1):
     resnet = models.resnet.__dict__[backbone_name](pretrained=backbone_pretrained)
     return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
     in_channels_stage2 = resnet.inplanes // 8
@@ -441,17 +453,29 @@ def faster_rcnn_resnet_fpn(backbone_name, image_size, num_classes, max_objs_per_
         max_objs_per_image=max_objs_per_image,
         roi_pooling="roi_align",
         roi_pooling_output_size=roi_pooling_output_size,
-        obj_thresh=0.1,
+        obj_thresh=obj_thresh,
         logger=logger,
     )
 
 
-def faster_rcnn_resnet34_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None):
+def faster_rcnn_resnet34_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet_fpn(
         "resnet34",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
         backbone_pretrained=backbone_pretrained,
-        logger=logger
+        logger=logger,
+        obj_thresh=obj_thresh,
+    )
+
+def faster_rcnn_resnet50_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
+    return faster_rcnn_resnet_fpn(
+        "resnet50",
+        image_size=image_size,
+        num_classes=num_classes,
+        max_objs_per_image=max_objs_per_image,
+        backbone_pretrained=backbone_pretrained,
+        logger=logger,
+        obj_thresh=obj_thresh,
     )
