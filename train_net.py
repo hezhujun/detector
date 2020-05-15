@@ -129,7 +129,7 @@ if __name__ == '__main__':
     ])
     train_transform = Compose([
         Resize(cfg["dataset"]["resize"]),
-        # FlipLeftRight(),
+        FlipLeftRight(),
     ])
     val_transform = Compose([
         Resize(cfg["dataset"]["resize"]),
@@ -167,17 +167,16 @@ if __name__ == '__main__':
     if cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "":
         if type(cfg["train"]["gpus"]) is list:
             gpus = cfg["train"]["gpus"]
+        elif type(cfg["train"]["gpus"]) is int:
+            gpus = [cfg["train"]["gpus"],]
         else:
             gpus = cfg["train"]["gpus"].strip().split(",")
             gpus = [int(i) for i in gpus if i != ""]
-        assert len(gpus) == 1, "only support one gpus now"
         cfg["train"]["gpus"] = gpus
         device = [torch.device("cuda", i) for i in gpus]
-        device = device[0]
     else:
+        cfg["train"]["gpus"] = None
         device = torch.device("cpu")
-
-    faster_rcnn = faster_rcnn.to(device)
 
     # optimizer = optim.SGD(faster_rcnn.parameters(), lr=cfg["train"]["lr"], weight_decay=1e-4)
     optimizer = optim.SGD([
@@ -190,15 +189,35 @@ if __name__ == '__main__':
         {"params": faster_rcnn.reg.parameters(), "lr": 0.001},
     ], lr=cfg["train"]["lr"], weight_decay=1e-4)
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[8, 10])
-    warmup_scheduler = WarmingUpScheduler(optimizer, init_factor=0.1, steps=100)
+    warmup_scheduler = WarmingUpScheduler(optimizer, init_factor=0.1, steps=50)
     epochs = cfg["train"]["epochs"]
     epoch = 0
+
     if cfg["train"]["resume_from"] is not None and cfg["train"]["resume_from"] != "":
         state_dict = torch.load(cfg["train"]["resume_from"])
+        # if isinstance(faster_rcnn, nn.DataParallel):
+        #     # DataParallel在forward阶段分发模型和输入
+        #     # 保证每次forward时每个device的模型都一样
+        #     # 所以不用担心已经初始化的faster_rcnn再次加载模型参数导致不同devcie的模型参数不一样
+        #     faster_rcnn.module.load_state_dict(state_dict["model"])
+        # else:
+        #     faster_rcnn.load_state_dict(state_dict["model"])
         faster_rcnn.load_state_dict(state_dict["model"])
         optimizer.load_state_dict(state_dict["optimizer"])
         scheduler.load_state_dict(state_dict["scheduler"])
         epoch = state_dict["epoch"] + 1
+
+    if cfg["train"]["gpus"] is None:
+        faster_rcnn = faster_rcnn.to(device)
+    if len(cfg["train"]["gpus"]) == 1:
+        device = device[0]
+        faster_rcnn = faster_rcnn.to(device)
+    else:
+        # 这里暂时不用DistributedDataParallel，因为测试阶段需要在同一进程收集所有的输出
+        # 使用DataParallel方便操作
+        faster_rcnn = faster_rcnn.to(device[0])
+        faster_rcnn = nn.DataParallel(faster_rcnn, device_ids=device, output_device=device[0])
+        device = device[0]   # 只需把输入传到device[0]，DataParallel会自动把输入分发到各个device中
 
     iters_per_epoch = len(train_dataloader)
     iter_width = len(str(iters_per_epoch))
@@ -214,6 +233,12 @@ if __name__ == '__main__':
 
             optimizer.zero_grad()
             rpn_cls_loss, rpn_reg_loss, rcnn_cls_loss, rcnn_reg_loss = faster_rcnn(images, labels, bboxes)
+            if isinstance(faster_rcnn, nn.DataParallel):
+                # (num_gpus,) -> (1,)
+                rpn_cls_loss = torch.mean(rpn_cls_loss)
+                rpn_reg_loss = torch.mean(rpn_reg_loss)
+                rcnn_cls_loss = torch.mean(rcnn_cls_loss)
+                rcnn_reg_loss = torch.mean(rcnn_reg_loss)
 
             total_loss = rpn_cls_loss + rpn_reg_loss + rcnn_cls_loss + rcnn_reg_loss
             total_loss.backward()
@@ -251,7 +276,7 @@ if __name__ == '__main__':
             iteration += 1
 
         save_dict = {
-            "model": faster_rcnn.state_dict(),
+            "model": faster_rcnn.module.state_dict() if isinstance(faster_rcnn, nn.DataParallel) else faster_rcnn.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "epoch": epoch
