@@ -141,18 +141,23 @@ class RegionProposalNetwork(nn.Module):
                     # NMS per layer
                     BS = cls_scores.shape[0]
                     keep_bboxes = []
+                    keep_scores = []
                     for i in range(BS):
                         dtype = reg_bboxes.dtype
                         device = reg_bboxes.device
                         _bboxes = torch.full((post_nms_top_n//len(features), 4), -1, dtype=dtype, device=device)
+                        _scores = torch.full((post_nms_top_n//len(features), ), -1, dtype=cls_scores.dtype, device=cls_scores.device)
                         keep = ops.nms(reg_bboxes[i], cls_scores[i], self.nms_thresh)
                         n_keep = keep.shape[0]
                         n_keep = min(n_keep, post_nms_top_n//len(features))
                         keep = keep[:n_keep]
                         _bboxes[:n_keep] = reg_bboxes[i][keep]
+                        _scores[:n_keep] = cls_scores[i][keep]
                         keep_bboxes.append(_bboxes)
+                        keep_scores.append(_scores)
 
                     total_reg_bboxes.append(torch.stack(keep_bboxes))
+                    total_cls_scores.append(torch.stack(keep_scores))
 
         # (-1, 4)
         anchors = torch.cat(total_anchors, dim=0)
@@ -183,7 +188,18 @@ class RegionProposalNetwork(nn.Module):
 
             bboxes = torch.stack(keep_bboxes)  # (BS, post_nms_top_n, 4)
         else:
+            # (BS, post_nms_top_n)
+            cls_scores = torch.cat(total_cls_scores, dim=1)
+            # (BS, post_nms_top_n)
             bboxes = torch.cat(total_reg_bboxes, dim=1)
+            # 根据scores大小对bboxes(rois)进行降序排序
+            # 可能的原因：
+            # rois的顺序会影响rcnn，比如在rcnn的nms时，rcnn更倾向于选择前面的rois
+            # rois的rpn_scores高，rcnn_scores的分数也高
+            # 当rois的分数差不多时，位于前面的rois会在nms时抑制后面的rois
+            for i in range(cls_scores.shape[0]):
+                sorted_indices = torch.argsort(cls_scores[i], descending=True)
+                bboxes[i] = bboxes[i][sorted_indices]
 
         if self.training:
             total_cls_pred = []
@@ -254,7 +270,12 @@ class RegionProposalNetwork(nn.Module):
             cls_loss = F.binary_cross_entropy_with_logits(cls_pred[fg_bg_mask != 0], cls_label[fg_bg_mask != 0])
             if torch.any(torch.isnan(reg_target[fg_bg_mask == 1])):
                 raise Exception("some elements in reg_target is nan")
-            reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
+            if torch.any(torch.isnan(reg_pred[fg_bg_mask == 1])):
+                raise Exception("some elements in reg_pred is nan")
+            if torch.any(fg_bg_mask == 1):
+                reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
+            else: # 没有正样本
+                reg_loss = torch.zeros_like(cls_loss)
 
             cls_pred = torch.sigmoid(cls_pred) >= 0.5
             cls_label = cls_label == 1
