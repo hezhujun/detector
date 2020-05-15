@@ -23,7 +23,7 @@ class FasterRCNN(nn.Module):
                  rpn_pre_nms_top_n_in_test=2000, rpn_post_nms_top_n_in_test=1000,
                  rpn_nms_thresh=0.7, rpn_fg_iou_thresh=0.7, rpn_bg_iou_thresh=0.3,
                  rpn_num_samples=256, rpn_positive_fraction=0.5,
-                 rpn_nms_per_layer=True,
+                 rpn_nms_per_layer=False,
                  roi_pooling="roi_align", roi_pooling_output_size=7,
                  nms_thresh=0.5, fg_iou_thresh=0.5, bg_iou_thresh=0.5,
                  num_samples=128, positive_fraction=0.25,
@@ -228,6 +228,9 @@ class FasterRCNN(nn.Module):
                 total_labels.append(label)
                 total_reg_target.append(self.box_coder.encode(_rois, gt_bboxes[i][matched_idx]))
 
+                # from lib import debug
+                # debug.rcnn_pos_bboxes.append(self.box_coder.decode(_rois, _reg_pred)[fg_bg_mask == 1])
+
             # (BS, num_samples, num_classes+1)
             cls_pred = torch.stack(total_cls_pred)
             # (BS, num_samples, 4)
@@ -240,7 +243,12 @@ class FasterRCNN(nn.Module):
             reg_target = torch.stack(total_reg_target)
             if torch.any(torch.isnan(reg_target[fg_bg_mask == 1])):
                 raise Exception("some elements in reg_target is nan")
+            assert torch.any(fg_bg_mask == 1)  # 把gt加入到rois中，不可能没有正样本
             rcnn_reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
+            # if torch.any(fg_bg_mask == 1):
+            #     rcnn_reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
+            # else:  # 没有正样本
+            #     rcnn_reg_loss = torch.zeros([], dtype=reg_pred.dtype, device=reg_pred.device)
 
             cls_label = labels + 1  # 所有类别id+1，为background空出0
             cls_label = cls_label.reshape((-1,))
@@ -264,6 +272,9 @@ class FasterRCNN(nn.Module):
         cls_scores = F.softmax(cls_pred, dim=2)
         # (BS, num_rois, num_classes)
         cls_scores = cls_scores[:, :, 1:]
+
+        # from lib import debug
+        # debug.rois_scores.append(cls_scores)
 
         # rois: (BS*num_rois, 5)
         # reg_pred: (BS, num_rois, num_classes, 4)
@@ -351,7 +362,9 @@ def faster_rcnn_resnet(
     roi_head.add_module("4", nn.ReLU())
 
     strides = (2 ** 4,)  # C4的步长
-    sizes = ((50, 50),)  # C4 feature map的大小
+    # C4 feature map的大小
+    sizes = [(ceil(image_size[0] / i), ceil(image_size[1] / i)) for i in strides]
+    sizes = tuple(sizes)
     scales = ((128 ** 2, 256 ** 2, 512 ** 2,),)
     ratios = ((0.5, 1, 2),)
 
@@ -434,7 +447,7 @@ def faster_rcnn_resnet_fpn(
     roi_head = TwoMLPHead(out_channels * roi_pooling_output_size ** 2, dim_roi_features)
 
     strides = (2 ** 2, 2 ** 3, 2 ** 4, 2 ** 5, 2 ** 6)  # P* 的步长
-    sizes = [(ceil(image_size[0] / i), ceil(image_size[0] / i)) for i in strides]
+    sizes = [(ceil(image_size[0] / i), ceil(image_size[1] / i)) for i in strides]
     sizes = tuple(sizes)
     scales = ((32 ** 2,), (64 ** 2,), (128 ** 2,), (256 ** 2,), (512 ** 2,))
     ratios = ((0.5, 1, 2),) * len(scales)
