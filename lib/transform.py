@@ -76,8 +76,12 @@ class FlipLeftRight(object):
             size = img.size
             size = np.array([size[0], size[1], size[0], size[1]])
             bbox = sample["bbox"]
-            bbox[:, 0] = size[0] - bbox[:, 0] - 1
-            bbox[:, 2] = size[0] - bbox[:, 2] - 1
+            # x1 -> new_x1
+            # x2 -> new_x2
+            # new_x1 <-> new_x2
+            new_x1 = size[0] - bbox[:, 0] - 1
+            new_x2 = size[0] - bbox[:, 2] - 1
+            bbox[:, 0], bbox[:, 2] = new_x2, new_x1
             sample["img"] = img
             sample["bbox"] = bbox
             sample["flip_left_right"] = True
@@ -98,8 +102,12 @@ class FlipTopBottom(object):
             size = img.size
             size = np.array([size[0], size[1], size[0], size[1]])
             bbox = sample["bbox"]
-            bbox[:, 1] = size[1] - bbox[:, 1] - 1
-            bbox[:, 3] = size[1] - bbox[:, 3] - 1
+            # y1 -> new_y1
+            # y2 -> new_y2
+            # new_y1 <-> new_y2
+            new_y1 = size[1] - bbox[:, 1] - 1
+            new_y2 = size[1] - bbox[:, 3] - 1
+            bbox[:, 1], bbox[:, 3] = new_y2, new_y1
             sample["img"] = img
             sample["bbox"] = bbox
             sample["flip_top_bottom"] = True
