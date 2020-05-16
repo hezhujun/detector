@@ -10,11 +10,11 @@ dataset:
     annFile: /root/userfolder/datasets/PennFudanPed/annotations/PennFudanPed.json
   resize: [800, 800]
   max_objs_per_image: 10
-  batch_size: 2
-  num_works: 8
+  batch_size: 2   # batch size per device
+  num_works: 4
 
 model:
-  name: faster_rcnn_resnet50_fpn
+  name: faster_rcnn_resnet50
   backbone_pertrained: true
   obj_thresh: 0.4
   load_from: ~
@@ -22,10 +22,12 @@ model:
 train:
   log: work_dir/log
   checkpoint: work_dir/checkpoint
-  log_every_step: 1
+  result: work_dir/result
+  multi_process: True
+  log_every_step: 10
   epochs: 12
-  lr: 0.005
-  gpus: [0,]
+  lr: 0.01
+  gpus: [1, 2, 3]
   resume_from: ~
 
 debug: False

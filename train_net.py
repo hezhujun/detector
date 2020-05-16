@@ -4,6 +4,7 @@ import torch.nn as nn
 from lib.dataset.coco import COCODataset
 from lib.transform import Resize, BatchCollator, Compose, FlipLeftRight
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 import torchvision.transforms as transforms
 import lib
 from lib.model.faster_rcnn import faster_rcnn_resnet18
@@ -16,10 +17,13 @@ import os
 from torch.utils.tensorboard import SummaryWriter
 from lib.util import WarmingUpScheduler
 from lib.util import SummaryWriterWrap
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+import json
 
 
 @torch.no_grad()
-def evaluate(net, dataloader, device):
+def evaluate(net, dataloader, device, result_file, cfg):
     results = []
     net.eval()
     dataset = dataloader.dataset
@@ -56,18 +60,22 @@ def evaluate(net, dataloader, device):
             # print(results_per_image)
             results.extend(results_per_image)
 
-    if len(results) > 0:
-        dataset = dataloader.dataset
-        cocoGT = dataset.coco
-        imgIds = dataset.ids
-        cocoDT = cocoGT.loadRes(results)
-        cocoEval = COCOeval(cocoGT, cocoDT, "bbox")
-        cocoEval.params.imgIds = imgIds
-        cocoEval.evaluate()
-        cocoEval.accumulate()
-        cocoEval.summarize()
-    else:
-        print("There is no object detected")
+    with open(result_file, "w") as f:
+        json.dump(results, f, indent=2)
+
+    if not cfg["train"]["multi_process"]:
+        if len(results) > 0:
+            dataset = dataloader.dataset
+            cocoGT = dataset.coco
+            imgIds = dataset.ids
+            cocoDT = cocoGT.loadRes(results)
+            cocoEval = COCOeval(cocoGT, cocoDT, "bbox")
+            cocoEval.params.imgIds = imgIds
+            cocoEval.evaluate()
+            cocoEval.accumulate()
+            cocoEval.summarize()
+        else:
+            print("There is no object detected")
 
 
 def parse_args():
@@ -79,6 +87,7 @@ def parse_args():
     parser.add_argument("--lr", type=float)
     parser.add_argument("--gpus", help="gpu index, like 0,1")
     parser.add_argument("--resume-from")
+    parser.add_argument("--local_rank", type=int)
     args = parser.parse_args()
     return args
 
@@ -109,6 +118,17 @@ if __name__ == '__main__':
 
     update_cfg(cfg, args)
 
+    if cfg["train"]["multi_process"]:
+        if args.local_rank is None:
+            print("""
+            python -m torch.distributed.launch --nproc_per_node=NUM_GPUS_YOU_HAVE
+               YOUR_TRAINING_SCRIPT.py (--arg1 --arg2 --arg3 and all other
+               arguments of your training script)
+            """)
+            exit()
+        else:
+            cfg["train"]["local_rank"] = args.local_rank
+
     log_dir = cfg["train"]["log"]
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
@@ -117,11 +137,37 @@ if __name__ == '__main__':
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
     checkpoint_dir = os.path.join(os.getcwd(), checkpoint_dir)
+    result_dir = cfg["train"]["result"]
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
+    result_dir = os.path.join(os.getcwd(), result_dir)
 
     if cfg["debug"]:
         print("Running in debug mode.")
 
-    print(cfg)
+    if cfg["train"]["multi_process"] and cfg["train"]["local_rank"] != 0:
+        pass
+    else:
+        print(json.dumps(cfg, indent=2))
+
+    if cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "":
+        if type(cfg["train"]["gpus"]) is list:
+            gpus = cfg["train"]["gpus"]
+        elif type(cfg["train"]["gpus"]) is int:
+            gpus = [cfg["train"]["gpus"],]
+        else:
+            gpus = cfg["train"]["gpus"].strip().split(",")
+            gpus = [int(i) for i in gpus if i != ""]
+        cfg["train"]["gpus"] = gpus
+        device = [torch.device("cuda", i) for i in gpus]
+    else:
+        cfg["train"]["gpus"] = None
+        device = torch.device("cpu")
+
+    if len(cfg["train"]["gpus"]) == 0:
+        cfg["train"]["gpus"] = None
+        device = torch.device("cpu")
+        cfg["train"]["multi_process"] = False
 
     image_transform = transforms.Compose([
         transforms.ToTensor(),
@@ -134,20 +180,37 @@ if __name__ == '__main__':
     val_transform = Compose([
         Resize(cfg["dataset"]["resize"]),
     ])
+
     train_data = cfg["dataset"]["train_data"]
     train_dataset = COCODataset(train_data["root"], train_data["annFile"], train_transform, debug=cfg["debug"])
     num_classes = len(train_dataset.classes.keys())
-    train_dataloader = DataLoader(train_dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=True,
-                                  num_workers=cfg["dataset"]["num_works"],
-                            collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
-
     val_data = cfg["dataset"]["val_data"]
     val_dataset = COCODataset(val_data["root"], val_data["annFile"], val_transform, debug=cfg["debug"])
+
+    if isinstance(device, list) and not cfg["train"]["multi_process"]:
+        batch_size = cfg["dataset"]["batch_size"] * len(device)
+    else:
+        batch_size = cfg["dataset"]["batch_size"]
+
+    if cfg["train"]["multi_process"]:
+        work_size = int(os.environ["WORLD_SIZE"])
+        local_rank = cfg["train"]["local_rank"]
+        train_sampler = DistributedSampler(train_dataset, num_replicas=work_size, rank=local_rank, shuffle=True)
+        val_sampler = DistributedSampler(val_dataset, num_replicas=work_size, rank=local_rank, shuffle=False)
+    else:
+        train_sampler = None
+        val_sampler = None
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=(train_sampler is None),
+                                  num_workers=cfg["dataset"]["num_works"], sampler=train_sampler,
+                            collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
     val_dataloader = DataLoader(val_dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=False,
-                                  num_workers=cfg["dataset"]["num_works"],
+                                  num_workers=cfg["dataset"]["num_works"], sampler=val_sampler,
                                 collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
 
-    writer = SummaryWriterWrap(log_dir)
+    if cfg["train"]["multi_process"] and cfg["train"]["local_rank"] != 0:
+        writer = None
+    else:
+        writer = SummaryWriterWrap(log_dir)
     faster_rcnn = lib.model.faster_rcnn.__dict__[cfg["model"]["name"]](
         image_size=cfg["dataset"]["resize"],
         num_classes=num_classes,
@@ -163,20 +226,6 @@ if __name__ == '__main__':
             faster_rcnn.load_state_dict(state_dict["model"])
         else:
             faster_rcnn.load_state_dict(state_dict)
-
-    if cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "":
-        if type(cfg["train"]["gpus"]) is list:
-            gpus = cfg["train"]["gpus"]
-        elif type(cfg["train"]["gpus"]) is int:
-            gpus = [cfg["train"]["gpus"],]
-        else:
-            gpus = cfg["train"]["gpus"].strip().split(",")
-            gpus = [int(i) for i in gpus if i != ""]
-        cfg["train"]["gpus"] = gpus
-        device = [torch.device("cuda", i) for i in gpus]
-    else:
-        cfg["train"]["gpus"] = None
-        device = torch.device("cpu")
 
     # optimizer = optim.SGD(faster_rcnn.parameters(), lr=cfg["train"]["lr"], weight_decay=1e-4)
     optimizer = optim.SGD([
@@ -207,17 +256,27 @@ if __name__ == '__main__':
         scheduler.load_state_dict(state_dict["scheduler"])
         epoch = state_dict["epoch"] + 1
 
-    if cfg["train"]["gpus"] is None:
+    if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
         faster_rcnn = faster_rcnn.to(device)
     if len(cfg["train"]["gpus"]) == 1:
         device = device[0]
         faster_rcnn = faster_rcnn.to(device)
     else:
-        # 这里暂时不用DistributedDataParallel，因为测试阶段需要在同一进程收集所有的输出
-        # 使用DataParallel方便操作
-        faster_rcnn = faster_rcnn.to(device[0])
-        faster_rcnn = nn.DataParallel(faster_rcnn, device_ids=device, output_device=device[0])
-        device = device[0]   # 只需把输入传到device[0]，DataParallel会自动把输入分发到各个device中
+        if cfg["train"]["multi_process"]:
+            work_size = int(os.environ["WORLD_SIZE"])
+            assert len(cfg["train"]["gpus"]) == work_size
+            device = device[cfg["train"]["local_rank"]]
+            torch.cuda.set_device(device)
+            torch.distributed.init_process_group(backend='nccl', world_size=work_size, rank=cfg["train"]["local_rank"])
+            faster_rcnn = faster_rcnn.to(device)
+            faster_rcnn = DDP(faster_rcnn, device_ids=[device,], output_device=device)
+        else:
+            faster_rcnn = faster_rcnn.to(device[0])
+            faster_rcnn = nn.DataParallel(faster_rcnn, device_ids=device, output_device=device[0])
+            device = device[0]   # 只需把输入传到device[0]，DataParallel会自动把输入分发到各个device中
+
+    local_rank = cfg["train"]["local_rank"]
+    print("--------------------------------", local_rank)
 
     iters_per_epoch = len(train_dataloader)
     iter_width = len(str(iters_per_epoch))
@@ -225,7 +284,8 @@ if __name__ == '__main__':
         faster_rcnn.train()
         iteration = 0
         for images, labels, bboxes, _ in train_dataloader:
-            writer.step(epoch * iters_per_epoch + iteration)
+            if writer is not None:
+                writer.step(epoch * iters_per_epoch + iteration)
 
             images = images.to(device)
             labels = labels.to(device)
@@ -252,13 +312,16 @@ if __name__ == '__main__':
             rcnn_reg_loss = rcnn_reg_loss.detach().cpu().item()
             total_loss = total_loss.detach().cpu().item()
 
-            writer.add_scalar("rpn/cls_loss", rpn_cls_loss)
-            writer.add_scalar("rpn/reg_loss", rpn_reg_loss)
-            writer.add_scalar("rcnn/cls_loss", rcnn_cls_loss)
-            writer.add_scalar("rcnn/reg_loss", rcnn_reg_loss)
-            writer.add_scalar("total_loss", total_loss)
+            if writer is not None:
+                writer.add_scalar("rpn/cls_loss", rpn_cls_loss)
+                writer.add_scalar("rpn/reg_loss", rpn_reg_loss)
+                writer.add_scalar("rcnn/cls_loss", rcnn_cls_loss)
+                writer.add_scalar("rcnn/reg_loss", rcnn_reg_loss)
+                writer.add_scalar("total_loss", total_loss)
 
-            if iteration % cfg["train"]["log_every_step"] == 0:
+            if cfg["train"]["multi_process"] and cfg["train"]["local_rank"] != 0:
+                pass
+            elif iteration % cfg["train"]["log_every_step"] == 0:
                 log_string = "epoch {:03} iter {:0" + str(iter_width) + "}/{} "
                 log_string += "lr {:0.6f} "
                 log_string += "rpn_cls_loss {:6.4f} rpn_reg_loss {:6.4f} "
@@ -275,19 +338,34 @@ if __name__ == '__main__':
                 ))
             iteration += 1
 
-        save_dict = {
-            "model": faster_rcnn.module.state_dict() if isinstance(faster_rcnn, nn.DataParallel) else faster_rcnn.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "epoch": epoch
-        }
+        if cfg["train"]["multi_process"] and cfg["train"]["local_rank"] != 0:
+            pass
+        else:
+            if isinstance(faster_rcnn, (nn.DataParallel, DDP)):
+                model_state_dict = faster_rcnn.module.state_dict()
+            else:
+                model_state_dict = faster_rcnn.state_dict()
+            save_dict = {
+                "model": model_state_dict,
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "epoch": epoch
+            }
+            checkpoint_path = os.path.join(checkpoint_dir, "checkpoint-{:04}.pth".format(epoch))
+            torch.save(save_dict, checkpoint_path)
+            sym_path = os.path.join(checkpoint_dir, "checkpoint-latest.pth")
+            torch.save(save_dict, sym_path)  # 软连接方式出错
+            if writer is not None:
+                writer.flush()
         scheduler.step()
-        checkpoint_path = os.path.join(checkpoint_dir, "checkpoint-{:04}.pth".format(epoch))
-        torch.save(save_dict, checkpoint_path)
-        sym_path = os.path.join(checkpoint_dir, "checkpoint-latest.pth")
-        torch.save(save_dict, sym_path)  # 软连接方式出错
-        writer.flush()
 
-        evaluate(faster_rcnn, val_dataloader, device)
+        if cfg["train"]["multi_process"]:
+            result_file_pattern = "val-epoch{}" + "-{}.json".format(cfg["train"]["local_rank"])
+        else:
+            result_file_pattern = "val-epoch{}.json"
+        evaluate(faster_rcnn, val_dataloader, device, os.path.join(result_dir, result_file_pattern.format(epoch)), cfg)
 
-    writer.close()
+    if writer is not None:
+        writer.close()
+    if cfg["train"]["multi_process"]:
+        dist.destroy_process_group()

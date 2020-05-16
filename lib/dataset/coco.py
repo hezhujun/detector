@@ -1,8 +1,11 @@
 import os
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFile
 from collections import OrderedDict
 from pycocotools.coco import COCO
+from torch.utils.data import Dataset
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 class ClassTransform(object):
@@ -26,7 +29,7 @@ class ClassTransformImpl(ClassTransform):
         return self.map_reverse[class_id]
 
 
-class COCODataset(object):
+class COCODataset(Dataset):
 
     def __init__(self, root, annFile, transform=None, debug=False):
         self.root = root
@@ -61,7 +64,7 @@ class COCODataset(object):
 
         label = np.array(label)
         bbox = np.array(bbox)
-        sample = OrderedDict(image_id=image_id, img=img, label=label, bbox=bbox)
+        sample = OrderedDict(image_path=image_path, image_id=image_id, img=img, label=label, bbox=bbox)
 
         if self.transform is not None:
             return self.transform(sample)

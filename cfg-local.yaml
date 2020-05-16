@@ -22,6 +22,8 @@ model:
 train:
   log: work_dir/log
   checkpoint: work_dir/checkpoint
+  result: work_dir/result
+  multi_process: False
   log_every_step: 1
   epochs: 12
   lr: 0.001
