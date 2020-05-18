@@ -206,6 +206,11 @@ class RegionProposalNetwork(nn.Module):
             total_reg_pred = []
             total_reg_target = []
             total_fg_bg_mask = []
+
+            all_cls_pred = []
+            all_fg_bg_mask = []
+
+            BS = gt_bboxes.shape[0]
             for i in range(BS):
                 # 为每个anchor分配label
                 areas = ops.boxes.box_area(anchors)
@@ -233,6 +238,9 @@ class RegionProposalNetwork(nn.Module):
                 fg_bg_mask = torch.where(fg_mask, torch.ones_like(iou_max), fg_bg_mask)
                 # confirm negetive samples
                 fg_bg_mask = torch.where(iou_max <= self.bg_iou_thresh, torch.full_like(iou_max, -1), fg_bg_mask)
+
+                all_cls_pred.append(cls_pred[i].detach())
+                all_fg_bg_mask.append(fg_bg_mask.detach())
 
                 # 采样
                 indices = fg_bg_mask.argsort(descending=True)
@@ -282,10 +290,32 @@ class RegionProposalNetwork(nn.Module):
             acc = torch.mean((cls_label == cls_pred)[fg_bg_mask != 0].to(torch.float))
             num_pos = (fg_bg_mask == 1).sum()
             num_neg = (fg_bg_mask == -1).sum()
+
+            TP = (cls_pred == True)[fg_bg_mask == 1].sum()
+            FP = (cls_pred == True)[fg_bg_mask == -1].sum()
+            # TN = (cls_pred == False)[fg_bg_mask == -1].sum()
+            FN = (cls_pred == False)[fg_bg_mask == 1].sum()
+
+            precision = TP / (TP + FP)
+            recall = TP / (TP + FN)
+
+            all_cls_pred = torch.stack(all_cls_pred)
+            all_fg_bg_mask = torch.stack(all_fg_bg_mask)
+            all_cls_pred = all_cls_pred >= 0
+            all_TP = (all_cls_pred == True)[all_fg_bg_mask == 1].sum()
+            all_FP = (all_cls_pred == True)[all_fg_bg_mask == -1].sum()
+            all_FN = (all_cls_pred == False)[all_fg_bg_mask == 1].sum()
+            all_precision = all_TP / (all_TP + all_FP)
+            all_recall = all_TP / (all_TP + all_FN)
+
             if self.logger is not None:
                 self.logger.add_scalar("rpn/acc", acc.detach().cpu().item())
                 self.logger.add_scalar("rpn/num_pos", num_pos.detach().cpu().item())
                 self.logger.add_scalar("rpn/num_neg", num_neg.detach().cpu().item())
+                self.logger.add_scalar("rpn/precision", precision.detach().cpu().item())
+                self.logger.add_scalar("rpn/recall", recall.detach().cpu().item())
+                self.logger.add_scalar("rpn/all_precision", all_precision.detach().cpu().item())
+                self.logger.add_scalar("rpn/all_recall", all_recall.detach().cpu().item())
 
             return bboxes, cls_loss, reg_loss
 
