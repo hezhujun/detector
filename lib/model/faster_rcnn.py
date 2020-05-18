@@ -167,9 +167,10 @@ class FasterRCNN(nn.Module):
             total_reg_target = []
 
             for i in range(BS):
-                # 为每个anchor分配label
+                # 为每个roi分配label
                 # (num_rois, num_gt_bboxes)
                 areas = ops.boxes.box_area(rois[i])
+                ignore_mask = areas == 0
                 ious = ops.box_iou(rois[i], gt_bboxes[i])
                 # rois中有box面积为0，比如(-1,-1,-1,-1)，导致ious中出现nan
                 # 把nan换成0
@@ -179,14 +180,14 @@ class FasterRCNN(nn.Module):
                 if torch.any(torch.isnan(ious)):
                     raise Exception("some elements in ious is nan")
 
-                # the anchor/anchors with the highest Intersection-over-Union (IoU)
+                # the roi/rois with the highest Intersection-over-Union (IoU)
                 # overlap with a ground-truth box
                 iou_max_gt, indices = torch.max(ious, dim=0)
                 # 不考虑gt_bboxes中填充的部分
                 iou_max_gt = torch.where(labels[i] == -1, torch.ones_like(iou_max_gt), iou_max_gt)
                 highest_mask = (ious == iou_max_gt)
                 fg_mask = torch.any(highest_mask, dim=1)
-                # an anchor that has an IoU overlap higher than fg_iou_thresh with any ground-truth box
+                # a roi that has an IoU overlap higher than fg_iou_thresh with any ground-truth box
                 iou_max, matched_idx = torch.max(ious, dim=1)
                 # 1 for foreground -1 for background 0 for ignore
                 fg_bg_mask = torch.zeros_like(iou_max)
@@ -195,6 +196,8 @@ class FasterRCNN(nn.Module):
                 fg_bg_mask = torch.where(fg_mask, torch.ones_like(iou_max), fg_bg_mask)
                 # confirm negetive samples
                 fg_bg_mask = torch.where(iou_max <= self.bg_iou_thresh, torch.full_like(iou_max, -1), fg_bg_mask)
+                # ignore samples
+                fg_bg_mask = torch.where(ignore_mask, torch.zeros_like(iou_max), fg_bg_mask)
 
                 # 采样
                 indices = fg_bg_mask.argsort(descending=True)
