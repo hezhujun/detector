@@ -118,6 +118,25 @@ if __name__ == '__main__':
 
     update_cfg(cfg, args)
 
+    if cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "":
+        if type(cfg["train"]["gpus"]) is list:
+            gpus = cfg["train"]["gpus"]
+        elif type(cfg["train"]["gpus"]) is int:
+            gpus = [cfg["train"]["gpus"],]
+        else:
+            gpus = cfg["train"]["gpus"].strip().split(",")
+            gpus = [int(i) for i in gpus if i != ""]
+        cfg["train"]["gpus"] = gpus
+        device = [torch.device("cuda", i) for i in gpus]
+    else:
+        cfg["train"]["gpus"] = None
+        device = torch.device("cpu")
+
+    if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
+        cfg["train"]["gpus"] = None
+        device = torch.device("cpu")
+        cfg["train"]["multi_process"] = False
+
     if cfg["train"]["multi_process"]:
         if args.local_rank is None:
             print("""
@@ -128,6 +147,7 @@ if __name__ == '__main__':
             exit()
         else:
             cfg["train"]["local_rank"] = args.local_rank
+        assert len(cfg["train"]["gpus"]) > 1
 
     log_dir = cfg["train"]["log"]
     if not os.path.exists(log_dir):
@@ -149,25 +169,6 @@ if __name__ == '__main__':
         pass
     else:
         print(json.dumps(cfg, indent=2))
-
-    if cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "":
-        if type(cfg["train"]["gpus"]) is list:
-            gpus = cfg["train"]["gpus"]
-        elif type(cfg["train"]["gpus"]) is int:
-            gpus = [cfg["train"]["gpus"],]
-        else:
-            gpus = cfg["train"]["gpus"].strip().split(",")
-            gpus = [int(i) for i in gpus if i != ""]
-        cfg["train"]["gpus"] = gpus
-        device = [torch.device("cuda", i) for i in gpus]
-    else:
-        cfg["train"]["gpus"] = None
-        device = torch.device("cpu")
-
-    if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
-        cfg["train"]["gpus"] = None
-        device = torch.device("cpu")
-        cfg["train"]["multi_process"] = False
 
     image_transform = transforms.Compose([
         transforms.ToTensor(),
