@@ -164,7 +164,7 @@ if __name__ == '__main__':
         cfg["train"]["gpus"] = None
         device = torch.device("cpu")
 
-    if len(cfg["train"]["gpus"]) == 0:
+    if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
         cfg["train"]["gpus"] = None
         device = torch.device("cpu")
         cfg["train"]["multi_process"] = False
@@ -258,7 +258,7 @@ if __name__ == '__main__':
 
     if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
         faster_rcnn = faster_rcnn.to(device)
-    if len(cfg["train"]["gpus"]) == 1:
+    elif len(cfg["train"]["gpus"]) == 1:
         device = device[0]
         faster_rcnn = faster_rcnn.to(device)
     else:
@@ -274,9 +274,6 @@ if __name__ == '__main__':
             faster_rcnn = faster_rcnn.to(device[0])
             faster_rcnn = nn.DataParallel(faster_rcnn, device_ids=device, output_device=device[0])
             device = device[0]   # 只需把输入传到device[0]，DataParallel会自动把输入分发到各个device中
-
-    local_rank = cfg["train"]["local_rank"]
-    print("--------------------------------", local_rank)
 
     iters_per_epoch = len(train_dataloader)
     iter_width = len(str(iters_per_epoch))
@@ -304,7 +301,7 @@ if __name__ == '__main__':
             total_loss.backward()
             _lr = optimizer.state_dict()["param_groups"][0]["lr"]
             optimizer.step()
-            warmup_scheduler.step(epoch*iters_per_epoch + iteration)
+            warmup_scheduler.step()
 
             rpn_cls_loss = rpn_cls_loss.detach().cpu().item()
             rpn_reg_loss = rpn_reg_loss.detach().cpu().item()
