@@ -242,9 +242,15 @@ class RegionProposalNetwork(nn.Module):
                 all_cls_pred.append(cls_pred[i].detach())
                 all_fg_bg_mask.append(fg_bg_mask.detach())
 
-                # 采样
-                indices = fg_bg_mask.argsort(descending=True)
-                fg_bg_mask = fg_bg_mask[indices]
+                # 随机采样
+                indices = torch.arange(fg_bg_mask.shape[0], dtype=torch.int64, device=fg_bg_mask.device)
+                rand_indices = torch.rand_like(fg_bg_mask).argsort()
+                fg_bg_mask = fg_bg_mask[rand_indices]    # 打乱顺序，实现“随机”
+                indices = indices[rand_indices]
+
+                sorted_indices = fg_bg_mask.argsort(descending=True)
+                fg_bg_mask = fg_bg_mask[sorted_indices]
+                indices = indices[sorted_indices]
                 fg_indices = indices[:self.num_pos]
                 fg_mask = fg_bg_mask[:self.num_pos]
                 bg_indices = indices[-self.num_neg:]

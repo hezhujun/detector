@@ -182,7 +182,7 @@ class FasterRCNN(nn.Module):
 
                 # the roi/rois with the highest Intersection-over-Union (IoU)
                 # overlap with a ground-truth box
-                iou_max_gt, indices = torch.max(ious, dim=0)
+                iou_max_gt, _ = torch.max(ious, dim=0)
                 # 不考虑gt_bboxes中填充的部分
                 iou_max_gt = torch.where(labels[i] == -1, torch.ones_like(iou_max_gt), iou_max_gt)
                 highest_mask = (ious == iou_max_gt)
@@ -199,9 +199,15 @@ class FasterRCNN(nn.Module):
                 # ignore samples
                 fg_bg_mask = torch.where(ignore_mask, torch.zeros_like(iou_max), fg_bg_mask)
 
-                # 采样
-                indices = fg_bg_mask.argsort(descending=True)
-                fg_bg_mask = fg_bg_mask[indices]
+                # 随机采样
+                indices = torch.arange(fg_bg_mask.shape[0], dtype=torch.int64, device=fg_bg_mask.device)
+                rand_indices = torch.rand_like(fg_bg_mask).argsort()
+                fg_bg_mask = fg_bg_mask[rand_indices]  # 打乱顺序，实现“随机”
+                indices = indices[rand_indices]
+
+                sorted_indices = fg_bg_mask.argsort(descending=True)
+                fg_bg_mask = fg_bg_mask[sorted_indices]
+                indices = indices[sorted_indices]
                 fg_indices = indices[:self.num_pos]
                 fg_mask = fg_bg_mask[:self.num_pos]
                 bg_indices = indices[-self.num_neg:]
@@ -246,6 +252,8 @@ class FasterRCNN(nn.Module):
             reg_target = torch.stack(total_reg_target)
             if torch.any(torch.isnan(reg_target[fg_bg_mask == 1])):
                 raise Exception("some elements in reg_target is nan")
+            if torch.any(torch.isinf(reg_target[fg_bg_mask == 1])):
+                raise Exception("some elements in reg_target is inf")
             assert torch.any(fg_bg_mask == 1)  # 把gt加入到rois中，不可能没有正样本
             rcnn_reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
             # if torch.any(fg_bg_mask == 1):
