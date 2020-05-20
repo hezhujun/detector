@@ -297,10 +297,10 @@ class RegionProposalNetwork(nn.Module):
             num_pos = (fg_bg_mask == 1).sum()
             num_neg = (fg_bg_mask == -1).sum()
 
-            TP = (cls_pred == True)[fg_bg_mask == 1].sum()
-            FP = (cls_pred == True)[fg_bg_mask == -1].sum()
+            TP = (cls_pred == True)[fg_bg_mask == 1].sum().to(torch.float32)
+            FP = (cls_pred == True)[fg_bg_mask == -1].sum().to(torch.float32)
             # TN = (cls_pred == False)[fg_bg_mask == -1].sum()
-            FN = (cls_pred == False)[fg_bg_mask == 1].sum()
+            FN = (cls_pred == False)[fg_bg_mask == 1].sum().to(torch.float32)
 
             precision = TP / (TP + FP)
             recall = TP / (TP + FN)
@@ -308,13 +308,25 @@ class RegionProposalNetwork(nn.Module):
             all_cls_pred = torch.stack(all_cls_pred)
             all_fg_bg_mask = torch.stack(all_fg_bg_mask)
             all_cls_pred = all_cls_pred >= 0
-            all_TP = (all_cls_pred == True)[all_fg_bg_mask == 1].sum()
-            all_FP = (all_cls_pred == True)[all_fg_bg_mask == -1].sum()
-            all_FN = (all_cls_pred == False)[all_fg_bg_mask == 1].sum()
+            all_TP = (all_cls_pred == True)[all_fg_bg_mask == 1].sum().to(torch.float32)
+            all_FP = (all_cls_pred == True)[all_fg_bg_mask == -1].sum().to(torch.float32)
+            all_FN = (all_cls_pred == False)[all_fg_bg_mask == 1].sum().to(torch.float32)
             all_precision = all_TP / (all_TP + all_FP)
             all_recall = all_TP / (all_TP + all_FN)
 
             if self.logger is not None:
+                # print("TP {} FP {} FN {}".format(TP.detach().cpu().item(), FP.detach().cpu().item(), FN.detach().cpu().item()))
+                # print("all_TP {} all_FP {} all_FN {}".format(all_TP.detach().cpu().item(), all_FP.detach().cpu().item(), all_FN.detach().cpu().item()))
+                # print("precision {} recall {} all_precision {} all_recall {}".format(precision.detach().cpu().item(),
+                #                                                                      recall.detach().cpu().item(),
+                #                                                                      all_precision.detach().cpu().item(),
+                #                                                                      all_recall.detach().cpu().item()))
+                self.logger.add_scalar("rpn/TP", TP.detach().cpu().item())
+                self.logger.add_scalar("rpn/FP", FP.detach().cpu().item())
+                self.logger.add_scalar("rpn/FN", FN.detach().cpu().item())
+                self.logger.add_scalar("rpn/all_TP", all_TP.detach().cpu().item())
+                self.logger.add_scalar("rpn/all_FP", all_FP.detach().cpu().item())
+                self.logger.add_scalar("rpn/all_FN", all_FN.detach().cpu().item())
                 self.logger.add_scalar("rpn/acc", acc.detach().cpu().item())
                 self.logger.add_scalar("rpn/num_pos", num_pos.detach().cpu().item())
                 self.logger.add_scalar("rpn/num_neg", num_neg.detach().cpu().item())
