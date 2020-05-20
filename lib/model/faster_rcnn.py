@@ -482,6 +482,18 @@ def faster_rcnn_resnet_fpn(
     )
 
 
+def faster_rcnn_resnet18_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
+    return faster_rcnn_resnet_fpn(
+        "resnet34",
+        image_size=image_size,
+        num_classes=num_classes,
+        max_objs_per_image=max_objs_per_image,
+        backbone_pretrained=backbone_pretrained,
+        logger=logger,
+        obj_thresh=obj_thresh,
+    )
+
+
 def faster_rcnn_resnet34_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet_fpn(
         "resnet34",
