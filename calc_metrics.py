@@ -32,7 +32,7 @@ if __name__ == '__main__':
     val_data = cfg["dataset"]["val_data"]
     dataset = COCODataset(val_data["root"], val_data["annFile"], None, debug=cfg["debug"])
 
-    result_file = "val-epoch9"
+    result_file = "val-epoch0"
     files = []
     for file in os.listdir(result_dir):
         if os.path.isfile(os.path.join(result_dir, file)):
@@ -44,6 +44,10 @@ if __name__ == '__main__':
         print("load result file", file)
         with open(os.path.join(result_dir, file), 'r') as f:
             results.extend(json.load(f))
+
+    if len(results) == 0:
+        print("There is no object detected")
+        exit()
 
     cocoGT = dataset.coco
     imgIds = dataset.ids
