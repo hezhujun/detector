@@ -1,4 +1,5 @@
 import numpy as np
+import time
 import torch
 import torch.nn as nn
 from lib.dataset.coco import COCODataset
@@ -320,12 +321,14 @@ if __name__ == '__main__':
             if cfg["train"]["multi_process"] and cfg["train"]["local_rank"] != 0:
                 pass
             elif iteration % cfg["train"]["log_every_step"] == 0:
-                log_string = "epoch {:03} iter {:0" + str(iter_width) + "}/{} "
+                log_string = "{} "
+                log_string += "epoch {:03} iter {:0" + str(iter_width) + "}/{} "
                 log_string += "lr {:0.6f} "
                 log_string += "rpn_cls_loss {:6.4f} rpn_reg_loss {:6.4f} "
                 log_string += "rcnn_cls_loss {:6.4f} rcnn_reg_loss {:6.4f} "
                 log_string += "total_loss {:6.4f}"
                 print(log_string.format(
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                     epoch, iteration, len(train_dataloader),
                     _lr,
                     rpn_cls_loss,
