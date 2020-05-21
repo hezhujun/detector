@@ -32,6 +32,9 @@ def evaluate(net, dataloader, device, result_file, cfg):
     for images, labels, bboxes, samples in dataloader:
         images = images.to(device)
 
+        # if cfg["train"]["multi_process"]:
+        #     dist.barrier()
+
         scores, labels, bboxes = net(images, None, None)
         scores = scores.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
@@ -148,7 +151,7 @@ if __name__ == '__main__':
             exit()
         else:
             cfg["train"]["local_rank"] = args.local_rank
-        assert len(cfg["train"]["gpus"]) > 1
+        assert len(cfg["train"]["gpus"]) > 0
 
     log_dir = cfg["train"]["log"]
     if not os.path.exists(log_dir):
@@ -260,18 +263,27 @@ if __name__ == '__main__':
 
     if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
         faster_rcnn = faster_rcnn.to(device)
-    elif len(cfg["train"]["gpus"]) == 1:
-        device = device[0]
+    elif cfg["train"]["multi_process"]:
+        work_size = int(os.environ["WORLD_SIZE"])
+        assert len(cfg["train"]["gpus"]) == work_size
+        device = device[cfg["train"]["local_rank"]]
+        torch.cuda.set_device(device)
+        torch.distributed.init_process_group(backend='nccl', world_size=work_size, rank=cfg["train"]["local_rank"])
         faster_rcnn = faster_rcnn.to(device)
+        # RuntimeError: Expected to have finished reduction in the prior iteration before starting a new one.
+        # This error indicates that your module has parameters that were not used in producing loss.
+        # You can enable unused parameter detection by
+        #   (1) passing the keyword argument `find_unused_parameters=True` to `torch.nn.parallel.DistributedDataParallel`;
+        #   (2) making sure all `forward` function outputs participate in calculating loss.
+        # If you already have done the above two steps, then the distributed data parallel module wasn't able to
+        # locate the output tensors in the return value of your module's `forward` function.
+        # Please include the loss function and the structure of the return value of `forward` of your module
+        # when reporting this issue (e.g. list, dict, iterable).
+        faster_rcnn = DDP(faster_rcnn, device_ids=[device, ], output_device=device, find_unused_parameters=True)
     else:
-        if cfg["train"]["multi_process"]:
-            work_size = int(os.environ["WORLD_SIZE"])
-            assert len(cfg["train"]["gpus"]) == work_size
-            device = device[cfg["train"]["local_rank"]]
-            torch.cuda.set_device(device)
-            torch.distributed.init_process_group(backend='nccl', world_size=work_size, rank=cfg["train"]["local_rank"])
+        if len(cfg["train"]["gpus"]) == 1:
+            device = device[0]
             faster_rcnn = faster_rcnn.to(device)
-            faster_rcnn = DDP(faster_rcnn, device_ids=[device,], output_device=device)
         else:
             faster_rcnn = faster_rcnn.to(device[0])
             faster_rcnn = nn.DataParallel(faster_rcnn, device_ids=device, output_device=device[0])
@@ -289,6 +301,9 @@ if __name__ == '__main__':
             images = images.to(device)
             labels = labels.to(device)
             bboxes = bboxes.to(device)
+
+            # if cfg["train"]["multi_process"]:
+            #     dist.barrier()
 
             optimizer.zero_grad()
             rpn_cls_loss, rpn_reg_loss, rcnn_cls_loss, rcnn_reg_loss = faster_rcnn(images, labels, bboxes)
