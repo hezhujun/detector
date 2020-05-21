@@ -288,10 +288,10 @@ class RegionProposalNetwork(nn.Module):
                 raise Exception("some elements in reg_pred is nan")
             if torch.any(fg_bg_mask == 1):
                 reg_loss = F.smooth_l1_loss(reg_pred[fg_bg_mask == 1], reg_target[fg_bg_mask == 1])
-            else: # 没有正样本
+            else:  # 没有正样本
                 reg_loss = torch.zeros_like(cls_loss)
 
-            cls_pred = torch.sigmoid(cls_pred) >= 0.5
+            cls_pred = cls_pred >= 0.5
             cls_label = cls_label == 1
             acc = torch.mean((cls_label == cls_pred)[fg_bg_mask != 0].to(torch.float))
             num_pos = (fg_bg_mask == 1).sum()

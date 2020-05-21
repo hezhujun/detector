@@ -168,9 +168,9 @@ class FasterRCNN(nn.Module):
 
             for i in range(BS):
                 # 为每个roi分配label
-                # (num_rois, num_gt_bboxes)
                 areas = ops.boxes.box_area(rois[i])
                 ignore_mask = areas == 0
+                # (num_rois, num_gt_bboxes)
                 ious = ops.box_iou(rois[i], gt_bboxes[i])
                 # rois中有box面积为0，比如(-1,-1,-1,-1)，导致ious中出现nan
                 # 把nan换成0
