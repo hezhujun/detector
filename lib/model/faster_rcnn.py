@@ -23,7 +23,7 @@ class FasterRCNN(nn.Module):
                  rpn_pre_nms_top_n_in_test=2000, rpn_post_nms_top_n_in_test=1000,
                  rpn_nms_thresh=0.7, rpn_fg_iou_thresh=0.7, rpn_bg_iou_thresh=0.3,
                  rpn_num_samples=256, rpn_positive_fraction=0.5,
-                 rpn_nms_per_layer=False,
+                 rpn_nms_per_layer=True,
                  roi_pooling="roi_align", roi_pooling_output_size=7,
                  nms_thresh=0.5, fg_iou_thresh=0.5, bg_iou_thresh=0.5,
                  num_samples=128, positive_fraction=0.25,
@@ -183,6 +183,14 @@ class FasterRCNN(nn.Module):
                 # the roi/rois with the highest Intersection-over-Union (IoU)
                 # overlap with a ground-truth box
                 iou_max_gt, _ = torch.max(ious, dim=0)
+
+                #############################################################
+                # 统计rois是否覆盖所有gt，gt的召回率
+                gt_recall = (iou_max_gt >= 0.5)[labels[i] != -1].to(torch.float32).mean()
+                if self.logger is not None:
+                    self.logger.add_scalar("rcnn/gt_recall", gt_recall.detach().cpu().item())
+                #############################################################
+
                 # 不考虑gt_bboxes中填充的部分
                 iou_max_gt = torch.where(labels[i] == -1, torch.ones_like(iou_max_gt), iou_max_gt)
                 highest_mask = (ious == iou_max_gt)
