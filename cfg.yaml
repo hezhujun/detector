@@ -14,7 +14,7 @@ dataset:
   num_works: 4
 
 model:
-  name: faster_rcnn_resnet50_fpn
+  name: faster_rcnn_resnet50
   backbone_pertrained: true
   obj_thresh: 0.4
   load_from: ~
@@ -23,11 +23,11 @@ train:
   log: work_dir/log
   checkpoint: work_dir/checkpoint
   result: work_dir/result
-  multi_process: True
+  multi_process: False
   log_every_step: 10
   epochs: 12
-  lr: 0.05
-  gpus: [0, 1, 2]
+  lr: 0.01
+  gpus: [0, 1]
   resume_from: ~
 
 debug: False

@@ -15,6 +15,7 @@ from .util import BoxCoder
 class FasterRCNN(nn.Module):
     
     def __init__(self,
+                 device0, device1,
                  backbone, roi_head, dim_roi_features,
                  image_size, num_classes,
                  strides, sizes, scales, ratios,
@@ -32,7 +33,8 @@ class FasterRCNN(nn.Module):
         super(FasterRCNN, self).__init__()
         self.image_size = image_size
         self.backbone = backbone
-        self.rpn = RegionProposalNetwork(strides=strides,
+        self.rpn = RegionProposalNetwork(device=device0,
+                                         strides=strides,
                                          sizes=sizes,
                                          scales=scales,
                                          ratios=ratios,
@@ -74,6 +76,16 @@ class FasterRCNN(nn.Module):
         self.obj_thresh = obj_thresh
         self.logger = logger
 
+        self.device0 = device0
+        self.device1 = device1
+
+    def to_gpus(self):
+        self.backbone.to(self.device0)
+        self.rpn.to(self.device0)
+        self.roi_head.to(self.device1)
+        self.cls.to(self.device1)
+        self.reg.to(self.device1)
+
     def forward(self, images, labels=None, gt_bboxes=None):
         """
 
@@ -82,10 +94,14 @@ class FasterRCNN(nn.Module):
         :param gt_bboxes: shape (BS, n_objs, 4)
         :return:
         """
-
+        images = images.to(self.device0)
         feats = self.backbone(images)
         # rois shape (BS, num_rois, 4)
         rois, rpn_cls_loss, rpn_reg_loss = self.rpn(feats, labels, gt_bboxes)
+
+        for k, v in feats.items():
+            feats[k]=v.to(self.device1)
+        rois = rois.to(self.device1)
 
         # rois[..., 0].clamp_(0, self.image_size[0])
         # rois[..., 1].clamp_(0, self.image_size[1])
@@ -96,8 +112,13 @@ class FasterRCNN(nn.Module):
         # debug.rois.append(rois)
 
         if self.training:
+            labels = labels.to(self.device1)
+            gt_bboxes = gt_bboxes.to(self.device1)
             # 把gt bboxes加入到rois中
             rois = torch.cat([rois, gt_bboxes], dim=1)
+
+            rpn_cls_loss = rpn_cls_loss.to(self.device1)
+            rpn_reg_loss = rpn_reg_loss.to(self.device1)
 
         # rois 添加batch_id维
         BS, num_rois, _ = rois.shape
@@ -356,7 +377,7 @@ class FasterRCNN(nn.Module):
         return scores, labels, bboxes
 
 
-def faster_rcnn_resnet(
+def faster_rcnn_resnet(device0, device1,
         backbone_name, image_size, num_classes, max_objs_per_image,
         backbone_pretrained=False, logger=None, obj_thresh=0.1):
     resnet = models.resnet.__dict__[backbone_name](pretrained=backbone_pretrained)
@@ -396,6 +417,8 @@ def faster_rcnn_resnet(
     ratios = ((0.5, 1, 2),)
 
     return FasterRCNN(
+        device0=device0,
+        device1=device1,
         backbone=backbone,
         roi_head=roi_head,
         dim_roi_features=dim_roi_features,
@@ -414,9 +437,11 @@ def faster_rcnn_resnet(
     )
 
 
-def faster_rcnn_resnet18(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
+def faster_rcnn_resnet18(device0, device1, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet(
-        "resnet18",
+        device0=device0,
+        device1=device1,
+        backbone_name="resnet18",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
@@ -426,9 +451,11 @@ def faster_rcnn_resnet18(image_size, num_classes, max_objs_per_image, backbone_p
     )
 
 
-def faster_rcnn_resnet34(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
+def faster_rcnn_resnet34(device0, device1, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet(
-        "resnet34",
+        device0=device0,
+        device1=device1,
+        backbone_name="resnet34",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
@@ -438,9 +465,11 @@ def faster_rcnn_resnet34(image_size, num_classes, max_objs_per_image, backbone_p
     )
 
 
-def faster_rcnn_resnet50(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
+def faster_rcnn_resnet50(device0, device1, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet(
-        "resnet50",
+        device0=device0,
+        device1=device1,
+        backbone_name="resnet50",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
@@ -450,7 +479,7 @@ def faster_rcnn_resnet50(image_size, num_classes, max_objs_per_image, backbone_p
     )
 
 
-def faster_rcnn_resnet_fpn(
+def faster_rcnn_resnet_fpn(device0, device1,
         backbone_name, image_size, num_classes, max_objs_per_image,
         backbone_pretrained=False, logger=None, obj_thresh=0.1):
     resnet = models.resnet.__dict__[backbone_name](pretrained=backbone_pretrained)
@@ -473,7 +502,9 @@ def faster_rcnn_resnet_fpn(
     from torchvision.models.detection.faster_rcnn import TwoMLPHead
     roi_head = nn.Sequential()
     roi_head.add_module("0", nn.Conv2d(out_channels, out_channels, 3, 2))
-    roi_head = TwoMLPHead(out_channels * ceil(roi_pooling_output_size / 2) ** 2, dim_roi_features)
+    roi_head.add_module("1", nn.BatchNorm2d(out_channels))
+    roi_head.add_module("2", nn.ReLU())
+    roi_head.add_module("3", TwoMLPHead(out_channels * (roi_pooling_output_size // 2) ** 2, dim_roi_features))
 
     strides = (2 ** 2, 2 ** 3, 2 ** 4, 2 ** 5, 2 ** 6)  # P* 的步长
     sizes = [(ceil(image_size[0] / i), ceil(image_size[1] / i)) for i in strides]
@@ -482,6 +513,8 @@ def faster_rcnn_resnet_fpn(
     ratios = ((0.5, 1, 2),) * len(scales)
 
     return FasterRCNN(
+        device0=device0,
+        device1=device1,
         backbone=backbone,
         roi_head=roi_head,
         dim_roi_features=dim_roi_features,
@@ -500,9 +533,11 @@ def faster_rcnn_resnet_fpn(
     )
 
 
-def faster_rcnn_resnet18_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
+def faster_rcnn_resnet18_fpn(device0, device1, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet_fpn(
-        "resnet34",
+        device0=device0,
+        device1=device1,
+        backbone_name="resnet34",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
@@ -512,9 +547,11 @@ def faster_rcnn_resnet18_fpn(image_size, num_classes, max_objs_per_image, backbo
     )
 
 
-def faster_rcnn_resnet34_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
+def faster_rcnn_resnet34_fpn(device0, device1, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet_fpn(
-        "resnet34",
+        device0=device0,
+        device1=device1,
+        backbone_name="resnet34",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,
@@ -523,9 +560,11 @@ def faster_rcnn_resnet34_fpn(image_size, num_classes, max_objs_per_image, backbo
         obj_thresh=obj_thresh,
     )
 
-def faster_rcnn_resnet50_fpn(image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
+def faster_rcnn_resnet50_fpn(device0, device1, image_size, num_classes, max_objs_per_image, backbone_pretrained=False, logger=None, obj_thresh=0.1):
     return faster_rcnn_resnet_fpn(
-        "resnet50",
+        device0=device0,
+        device1=device1,
+        backbone_name="resnet50",
         image_size=image_size,
         num_classes=num_classes,
         max_objs_per_image=max_objs_per_image,

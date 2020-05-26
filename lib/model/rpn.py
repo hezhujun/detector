@@ -8,7 +8,9 @@ from .util import BoxCoder
 
 class RegionProposalNetwork(nn.Module):
 
-    def __init__(self, strides, sizes, scales, ratios,
+    def __init__(self,
+                 device,
+                 strides, sizes, scales, ratios,
                  in_channels,
                  image_size,
                  pre_nms_top_n_in_train, post_nms_top_n_in_train,
@@ -68,6 +70,7 @@ class RegionProposalNetwork(nn.Module):
         self.num_neg = num_samples - self.num_pos
         self.logger = logger
         self.nms_per_layer = nms_per_layer
+        self.device = device
 
         self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
         self.cls = nn.Conv2d(in_channels, num_anchors, kernel_size=1, stride=1)
@@ -94,6 +97,10 @@ class RegionProposalNetwork(nn.Module):
         else:
             pre_nms_top_n = self.pre_nms_top_n_in_test
             post_nms_top_n = self.post_nms_top_n_in_test
+
+        if self.training:
+            labels = labels.to(self.device)
+            gt_bboxes = gt_bboxes.to(self.device)
 
         total_anchors = []
         total_cls_pred = []

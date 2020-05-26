@@ -3,7 +3,7 @@ import time
 import torch
 import torch.nn as nn
 from lib.dataset.coco import COCODataset
-from lib.transform import Resize, BatchCollator, Compose, FlipLeftRight
+from lib.transform import Resize, BatchCollator, Compose, FlipLeftRight, FlipTopBottom
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torchvision.transforms as transforms
@@ -30,7 +30,6 @@ def evaluate(net, dataloader, device, result_file, cfg):
     dataset = dataloader.dataset
     class_transform = dataset.class_transform
     for images, labels, bboxes, samples in dataloader:
-        images = images.to(device)
 
         # if cfg["train"]["multi_process"]:
         #     dist.barrier()
@@ -122,24 +121,16 @@ if __name__ == '__main__':
 
     update_cfg(cfg, args)
 
-    if cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "":
-        if type(cfg["train"]["gpus"]) is list:
-            gpus = cfg["train"]["gpus"]
-        elif type(cfg["train"]["gpus"]) is int:
-            gpus = [cfg["train"]["gpus"],]
-        else:
-            gpus = cfg["train"]["gpus"].strip().split(",")
-            gpus = [int(i) for i in gpus if i != ""]
-        cfg["train"]["gpus"] = gpus
-        device = [torch.device("cuda", i) for i in gpus]
+    assert cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "";
+    if type(cfg["train"]["gpus"]) is list:
+        gpus = cfg["train"]["gpus"]
+    elif type(cfg["train"]["gpus"]) is int:
+        gpus = [cfg["train"]["gpus"], ]
     else:
-        cfg["train"]["gpus"] = None
-        device = torch.device("cpu")
-
-    if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
-        cfg["train"]["gpus"] = None
-        device = torch.device("cpu")
-        cfg["train"]["multi_process"] = False
+        gpus = cfg["train"]["gpus"].strip().split(",")
+        gpus = [int(i) for i in gpus if i != ""]
+    cfg["train"]["gpus"] = gpus
+    assert len(gpus) >= 2
 
     if cfg["train"]["multi_process"]:
         if args.local_rank is None:
@@ -151,7 +142,7 @@ if __name__ == '__main__':
             exit()
         else:
             cfg["train"]["local_rank"] = args.local_rank
-        assert len(cfg["train"]["gpus"]) > 0
+        assert len(cfg["train"]["gpus"]) // 2 > args.local_rank
 
     log_dir = cfg["train"]["log"]
     if not os.path.exists(log_dir):
@@ -181,6 +172,7 @@ if __name__ == '__main__':
     train_transform = Compose([
         Resize(cfg["dataset"]["resize"]),
         FlipLeftRight(),
+        # FlipTopBottom(),
     ])
     val_transform = Compose([
         Resize(cfg["dataset"]["resize"]),
@@ -192,10 +184,7 @@ if __name__ == '__main__':
     val_data = cfg["dataset"]["val_data"]
     val_dataset = COCODataset(val_data["root"], val_data["annFile"], val_transform, debug=cfg["debug"])
 
-    if isinstance(device, list) and not cfg["train"]["multi_process"]:
-        batch_size = cfg["dataset"]["batch_size"] * len(device)
-    else:
-        batch_size = cfg["dataset"]["batch_size"]
+    batch_size = cfg["dataset"]["batch_size"]
 
     if cfg["train"]["multi_process"]:
         work_size = int(os.environ["WORLD_SIZE"])
@@ -216,7 +205,15 @@ if __name__ == '__main__':
         writer = None
     else:
         writer = SummaryWriterWrap(log_dir)
+    if cfg["train"]["multi_process"]:
+        device0 = torch.device(gpus[cfg["train"]["local_rank"]*2])
+        device1 = torch.device(gpus[cfg["train"]["local_rank"]*2+1])
+    else:
+        device0 = torch.device(gpus[0])
+        device1 = torch.device(gpus[1])
     faster_rcnn = lib.model.faster_rcnn.__dict__[cfg["model"]["name"]](
+        device0=device0,
+        device1=device1,
         image_size=cfg["dataset"]["resize"],
         num_classes=num_classes,
         max_objs_per_image=cfg["dataset"]["max_objs_per_image"],
@@ -249,27 +246,16 @@ if __name__ == '__main__':
 
     if cfg["train"]["resume_from"] is not None and cfg["train"]["resume_from"] != "":
         state_dict = torch.load(cfg["train"]["resume_from"])
-        # if isinstance(faster_rcnn, nn.DataParallel):
-        #     # DataParallel在forward阶段分发模型和输入
-        #     # 保证每次forward时每个device的模型都一样
-        #     # 所以不用担心已经初始化的faster_rcnn再次加载模型参数导致不同devcie的模型参数不一样
-        #     faster_rcnn.module.load_state_dict(state_dict["model"])
-        # else:
-        #     faster_rcnn.load_state_dict(state_dict["model"])
         faster_rcnn.load_state_dict(state_dict["model"])
         optimizer.load_state_dict(state_dict["optimizer"])
         scheduler.load_state_dict(state_dict["scheduler"])
         epoch = state_dict["epoch"] + 1
 
-    if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
-        faster_rcnn = faster_rcnn.to(device)
-    elif cfg["train"]["multi_process"]:
+    if cfg["train"]["multi_process"]:
         work_size = int(os.environ["WORLD_SIZE"])
-        assert len(cfg["train"]["gpus"]) == work_size
-        device = device[cfg["train"]["local_rank"]]
-        torch.cuda.set_device(device)
+        assert len(cfg["train"]["gpus"]) // 2 == work_size
         torch.distributed.init_process_group(backend='nccl', world_size=work_size, rank=cfg["train"]["local_rank"])
-        faster_rcnn = faster_rcnn.to(device)
+        faster_rcnn.to_gpus()
         # RuntimeError: Expected to have finished reduction in the prior iteration before starting a new one.
         # This error indicates that your module has parameters that were not used in producing loss.
         # You can enable unused parameter detection by
@@ -279,15 +265,9 @@ if __name__ == '__main__':
         # locate the output tensors in the return value of your module's `forward` function.
         # Please include the loss function and the structure of the return value of `forward` of your module
         # when reporting this issue (e.g. list, dict, iterable).
-        faster_rcnn = DDP(faster_rcnn, device_ids=[device, ], output_device=device, find_unused_parameters=True)
+        faster_rcnn = DDP(faster_rcnn, find_unused_parameters=True)
     else:
-        if len(cfg["train"]["gpus"]) == 1:
-            device = device[0]
-            faster_rcnn = faster_rcnn.to(device)
-        else:
-            faster_rcnn = faster_rcnn.to(device[0])
-            faster_rcnn = nn.DataParallel(faster_rcnn, device_ids=device, output_device=device[0])
-            device = device[0]   # 只需把输入传到device[0]，DataParallel会自动把输入分发到各个device中
+        faster_rcnn.to_gpus()
 
     iters_per_epoch = len(train_dataloader)
     iter_width = len(str(iters_per_epoch))
@@ -297,10 +277,6 @@ if __name__ == '__main__':
         for images, labels, bboxes, _ in train_dataloader:
             if writer is not None:
                 writer.step(epoch * iters_per_epoch + iteration)
-
-            images = images.to(device)
-            labels = labels.to(device)
-            bboxes = bboxes.to(device)
 
             # if cfg["train"]["multi_process"]:
             #     dist.barrier()
@@ -379,7 +355,7 @@ if __name__ == '__main__':
             result_file_pattern = "val-epoch{}" + "-{}.json".format(cfg["train"]["local_rank"])
         else:
             result_file_pattern = "val-epoch{}.json"
-        evaluate(faster_rcnn, val_dataloader, device, os.path.join(result_dir, result_file_pattern.format(epoch)), cfg)
+        evaluate(faster_rcnn, val_dataloader, None, os.path.join(result_dir, result_file_pattern.format(epoch)), cfg)
 
     if writer is not None:
         writer.close()
