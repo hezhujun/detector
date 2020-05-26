@@ -180,16 +180,22 @@ class FasterRCNN(nn.Module):
                 if torch.any(torch.isnan(ious)):
                     raise Exception("some elements in ious is nan")
 
+                #############################################################
+                # 统计rois是否覆盖所有gt，gt的召回率
+                num_gt = labels.shape[1]
+                _ious_withou_gt = ious[:-num_gt]   # 去掉rois中的gt
+                _ious_max_withou_gt, _ = torch.max(_ious_withou_gt, dim=0)
+                gt_recall = (_ious_max_withou_gt >= 0.5)[labels[i] != -1].to(torch.float32).mean()
+                if self.logger is not None:
+                    self.logger.add_scalar("rcnn/gt_recall_0.5", gt_recall.detach().cpu().item())
+                gt_recall = (_ious_max_withou_gt >= 0.7)[labels[i] != -1].to(torch.float32).mean()
+                if self.logger is not None:
+                    self.logger.add_scalar("rcnn/gt_recall_0.7", gt_recall.detach().cpu().item())
+                #############################################################
+
                 # the roi/rois with the highest Intersection-over-Union (IoU)
                 # overlap with a ground-truth box
                 iou_max_gt, _ = torch.max(ious, dim=0)
-
-                #############################################################
-                # 统计rois是否覆盖所有gt，gt的召回率
-                gt_recall = (iou_max_gt >= 0.5)[labels[i] != -1].to(torch.float32).mean()
-                if self.logger is not None:
-                    self.logger.add_scalar("rcnn/gt_recall", gt_recall.detach().cpu().item())
-                #############################################################
 
                 # 不考虑gt_bboxes中填充的部分
                 iou_max_gt = torch.where(labels[i] == -1, torch.ones_like(iou_max_gt), iou_max_gt)
