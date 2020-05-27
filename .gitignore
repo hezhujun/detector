@@ -14,3 +14,4 @@ lib/debug.py
 cfg.yaml
 cfg-local.yaml
 coco-local.yaml
+*.yaml
