@@ -19,8 +19,8 @@ class FasterRCNN(nn.Module):
                  image_size, num_classes,
                  strides, sizes, scales, ratios,
                  rpn_in_channels,
-                 rpn_pre_nms_top_n_in_train=2000, rpn_post_nms_top_n_in_train=1000,
-                 rpn_pre_nms_top_n_in_test=2000, rpn_post_nms_top_n_in_test=1000,
+                 rpn_pre_nms_top_n_in_train=5000, rpn_post_nms_top_n_in_train=1000,
+                 rpn_pre_nms_top_n_in_test=2000, rpn_post_nms_top_n_in_test=500,
                  rpn_nms_thresh=0.7, rpn_fg_iou_thresh=0.7, rpn_bg_iou_thresh=0.3,
                  rpn_num_samples=256, rpn_positive_fraction=0.5,
                  rpn_nms_per_layer=True,
@@ -363,7 +363,7 @@ def faster_rcnn_resnet(
     # return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
     backbone = models._utils.IntermediateLayerGetter(resnet, {'layer3': 'c4'})
 
-    roi_pooling_output_size = 14
+    roi_pooling_output_size = 7  # 设置成14可能 CUDA out of memeory
     c4_channels = resnet.inplanes // 2
     c5_channels = resnet.inplanes
 
