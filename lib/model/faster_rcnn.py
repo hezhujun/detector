@@ -1,4 +1,4 @@
-from math import ceil
+from math import ceil, floor
 
 import torch
 import numpy as np
@@ -472,10 +472,10 @@ def faster_rcnn_resnet_fpn(
 
     from torchvision.models.detection.faster_rcnn import TwoMLPHead
     roi_head = nn.Sequential()
-    roi_head.add_module("0", nn.Conv2d(out_channels, out_channels, 3, 2))
+    roi_head.add_module("0", nn.Conv2d(out_channels, out_channels, 3, 2, padding=1))
     roi_head.add_module("1", nn.BatchNorm2d(out_channels))
     roi_head.add_module("2", nn.ReLU())
-    roi_head.add_module("3", TwoMLPHead(out_channels * (roi_pooling_output_size // 2) ** 2, dim_roi_features))
+    roi_head.add_module("3", TwoMLPHead(out_channels * floor(roi_pooling_output_size / 2) ** 2, dim_roi_features))
 
     strides = (2 ** 2, 2 ** 3, 2 ** 4, 2 ** 5, 2 ** 6)  # P* 的步长
     sizes = [(ceil(image_size[0] / i), ceil(image_size[1] / i)) for i in strides]
