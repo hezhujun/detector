@@ -80,8 +80,13 @@ class FasterRCNN(nn.Module):
         self.device1 = device1
 
     def to_gpus(self):
+        # 注意
+        # 保证两个device的GPU占用率保存相对一致，不要一个device使用的GPU内存多，另一个少
+        # 测试中遇到程序突然中断的问题，暂时不清楚原因
+        # 保证两个device的GPU占用率保存相对一致可以让程序一致运行
+        # fpn模型中rpn放到device1中，保证两个device的GPU占用率保存相对一致
         self.backbone.to(self.device0)
-        self.rpn.to(self.device0)
+        self.rpn.to(self.rpn.device)
         self.roi_head.to(self.device1)
         self.cls.to(self.device1)
         self.reg.to(self.device1)
@@ -96,6 +101,8 @@ class FasterRCNN(nn.Module):
         """
         images = images.to(self.device0)
         feats = self.backbone(images)
+        for k, v in feats.items():
+            feats[k]=v.to(self.rpn.device)
         # rois shape (BS, num_rois, 4)
         rois, rpn_cls_loss, rpn_reg_loss = self.rpn(feats, labels, gt_bboxes)
 
