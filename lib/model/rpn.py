@@ -154,17 +154,19 @@ class RegionProposalNetwork(nn.Module):
                         device = reg_bboxes.device
                         _bboxes = torch.full((post_nms_top_n//len(features), 4), -1, dtype=dtype, device=device)
                         _scores = torch.full((post_nms_top_n//len(features), ), -1, dtype=cls_scores.dtype, device=cls_scores.device)
-                        # pre_nms_top_n_indices = torch.argsort(cls_scores[i], descending=True)
-                        # _num_anchors = pre_nms_top_n_indices.shape[0]
-                        # _pre_nms_top_n = pre_nms_top_n // len(features) if _num_anchors > pre_nms_top_n // len(features) else _num_anchors
-                        # pre_nms_top_n_indices = pre_nms_top_n_indices[:_pre_nms_top_n]
-                        # keep = ops.nms(reg_bboxes[i][pre_nms_top_n_indices], cls_scores[i][pre_nms_top_n_indices], self.nms_thresh)
-                        keep = ops.nms(reg_bboxes[i], cls_scores[i], self.nms_thresh)
+                        pre_nms_top_n_indices = torch.argsort(cls_scores[i], descending=True)
+                        _num_anchors = pre_nms_top_n_indices.shape[0]
+                        _pre_nms_top_n = pre_nms_top_n // len(features) if _num_anchors > pre_nms_top_n // len(features) else _num_anchors
+                        pre_nms_top_n_indices = pre_nms_top_n_indices[:_pre_nms_top_n]
+                        _reg_bboxes = reg_bboxes[i][pre_nms_top_n_indices]
+                        _cls_scores = cls_scores[i][pre_nms_top_n_indices]
+                        keep = ops.nms(_reg_bboxes, _cls_scores, self.nms_thresh)
+                        # keep = ops.nms(reg_bboxes[i], cls_scores[i], self.nms_thresh)
                         n_keep = keep.shape[0]
                         n_keep = min(n_keep, post_nms_top_n//len(features))
                         keep = keep[:n_keep]
-                        _bboxes[:n_keep] = reg_bboxes[i][keep]
-                        _scores[:n_keep] = cls_scores[i][keep]
+                        _bboxes[:n_keep] = _reg_bboxes[keep]
+                        _scores[:n_keep] = _cls_scores[keep]
                         keep_bboxes.append(_bboxes)
                         keep_scores.append(_scores)
 
@@ -191,16 +193,17 @@ class RegionProposalNetwork(nn.Module):
                 dtype = reg_bboxes.dtype
                 device = reg_bboxes.device
                 _bboxes = torch.full((post_nms_top_n, 4), -1, dtype=dtype, device=device)
-                # pre_nms_top_n_indices = torch.argsort(cls_scores[i], descending=True)
-                # _num_anchors = pre_nms_top_n_indices.shape[0]
-                # _pre_nms_top_n = pre_nms_top_n if _num_anchors > pre_nms_top_n else _num_anchors
-                # pre_nms_top_n_indices = pre_nms_top_n_indices[:_pre_nms_top_n]
-                # keep = ops.nms(reg_bboxes[i][pre_nms_top_n_indices], cls_scores[i][pre_nms_top_n_indices], self.nms_thresh)
-                keep = ops.nms(reg_bboxes[i], cls_scores[i], self.nms_thresh)
+                pre_nms_top_n_indices = torch.argsort(cls_scores[i], descending=True)
+                _num_anchors = pre_nms_top_n_indices.shape[0]
+                _pre_nms_top_n = pre_nms_top_n if _num_anchors > pre_nms_top_n else _num_anchors
+                pre_nms_top_n_indices = pre_nms_top_n_indices[:_pre_nms_top_n]
+                _reg_bboxes = reg_bboxes[i][pre_nms_top_n_indices]
+                keep = ops.nms(_reg_bboxes, cls_scores[i][pre_nms_top_n_indices], self.nms_thresh)
+                # keep = ops.nms(reg_bboxes[i], cls_scores[i], self.nms_thresh)
                 n_keep = keep.shape[0]
                 n_keep = min(n_keep, post_nms_top_n)
                 keep = keep[:n_keep]
-                _bboxes[:n_keep] = reg_bboxes[i][keep]
+                _bboxes[:n_keep] = _reg_bboxes[keep]
                 keep_bboxes.append(_bboxes)
 
             bboxes = torch.stack(keep_bboxes)  # (BS, post_nms_top_n, 4)
