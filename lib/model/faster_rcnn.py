@@ -363,7 +363,7 @@ def faster_rcnn_resnet(
     # return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
     backbone = models._utils.IntermediateLayerGetter(resnet, {'layer3': 'c4'})
 
-    roi_pooling_output_size = 7
+    roi_pooling_output_size = 14
     c4_channels = resnet.inplanes // 2
     c5_channels = resnet.inplanes
 
@@ -467,7 +467,7 @@ def faster_rcnn_resnet_fpn(
     backbone = BackboneWithFPN(resnet, return_layers, in_channels_list, out_channels)
 
     rpn_in_channels = out_channels
-    roi_pooling_output_size = 7
+    roi_pooling_output_size = 14
     dim_roi_features = 1024  # roi特征向量长度
 
     from torchvision.models.detection.faster_rcnn import TwoMLPHead
