@@ -1,4 +1,4 @@
-from math import ceil
+from math import ceil, floor
 
 import torch
 import numpy as np
@@ -391,7 +391,7 @@ def faster_rcnn_resnet(device0, device1,
     # return_layers = {'layer1': 'c2', 'layer2': 'c3', 'layer3': 'c4', 'layer4': 'c5'}
     backbone = models._utils.IntermediateLayerGetter(resnet, {'layer3': 'c4'})
 
-    roi_pooling_output_size = 7
+    roi_pooling_output_size = 14
     c4_channels = resnet.inplanes // 2
     c5_channels = resnet.inplanes
 
@@ -503,7 +503,7 @@ def faster_rcnn_resnet_fpn(device0, device1,
     backbone = BackboneWithFPN(resnet, return_layers, in_channels_list, out_channels)
 
     rpn_in_channels = out_channels
-    roi_pooling_output_size = 7
+    roi_pooling_output_size = 14
     dim_roi_features = 1024  # roi特征向量长度
 
     from torchvision.models.detection.faster_rcnn import TwoMLPHead
@@ -511,7 +511,7 @@ def faster_rcnn_resnet_fpn(device0, device1,
     roi_head.add_module("0", nn.Conv2d(out_channels, out_channels, 3, 2))
     roi_head.add_module("1", nn.BatchNorm2d(out_channels))
     roi_head.add_module("2", nn.ReLU())
-    roi_head.add_module("3", TwoMLPHead(out_channels * (roi_pooling_output_size // 2) ** 2, dim_roi_features))
+    roi_head.add_module("3", TwoMLPHead(out_channels * floor(roi_pooling_output_size // 2) ** 2, dim_roi_features))
 
     strides = (2 ** 2, 2 ** 3, 2 ** 4, 2 ** 5, 2 ** 6)  # P* 的步长
     sizes = [(ceil(image_size[0] / i), ceil(image_size[1] / i)) for i in strides]
