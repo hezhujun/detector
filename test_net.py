@@ -1,9 +1,11 @@
 import numpy as np
+import time
 import torch
 import torch.nn as nn
 from lib.dataset.coco import COCODataset
-from lib.transform import Resize, BatchCollator
+from lib.transform import Resize, BatchCollator, Compose, FlipLeftRight
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 import torchvision.transforms as transforms
 import lib
 from lib.model.faster_rcnn import faster_rcnn_resnet18
@@ -14,58 +16,13 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import os
 from torch.utils.tensorboard import SummaryWriter
+from lib.util import WarmingUpScheduler
+from lib.util import SummaryWriterWrap
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+import json
 
-
-@torch.no_grad()
-def evaluate(net, dataloader, device):
-    results = []
-    net.eval()
-    dataset = dataloader.dataset
-    class_transform = dataset.class_transform
-    for images, labels, bboxes, samples in dataloader:
-        images = images.to(device)
-
-        scores, labels, bboxes = net(images, None, None)
-        scores = scores.detach().cpu().numpy()
-        labels = labels.detach().cpu().numpy()
-        bboxes = bboxes.detach().cpu().numpy()
-
-        for i in range(len(samples)):
-            results_per_image = []
-            for score, label, bbox in zip(scores[i], labels[i], bboxes[i]):
-                if score == -1:
-                    break
-                x1, y1, x2, y2 = bbox
-                size = samples[i]["size"]
-                resize = samples[i]["resize"]
-                x1 = size[0] / resize[0] * x1
-                x2 = size[0] / resize[0] * x2
-                y1 = size[1] / resize[1] * y1
-                y2 = size[1] / resize[1] * y2
-
-                results_per_image.append({
-                    "image_id": samples[i]["image_id"],
-                    "category_id": class_transform.decode(int(label)),
-                    "score": float(score),
-                    "bbox": [x1, y1, x2 - x1, y2 - y1],
-                })
-            print("image {} {} objs {} detected".format(
-                samples[i]["image_id"], len(samples[i]["label"]), len(results_per_image)))
-            print(results_per_image)
-            results.extend(results_per_image)
-
-    if len(results) > 0:
-        dataset = dataloader.dataset
-        cocoGT = dataset.coco
-        imgIds = dataset.ids
-        cocoDT = cocoGT.loadRes(results)
-        cocoEval = COCOeval(cocoGT, cocoDT, "bbox")
-        cocoEval.params.imgIds = imgIds
-        cocoEval.evaluate()
-        cocoEval.accumulate()
-        cocoEval.summarize()
-    else:
-        print("There is no object detected")
+from train_net import evaluate
 
 
 def parse_args():
@@ -77,6 +34,7 @@ def parse_args():
     parser.add_argument("--lr", type=float)
     parser.add_argument("--gpus", help="gpu index, like 0,1")
     parser.add_argument("--resume-from")
+    parser.add_argument("--local_rank", type=int)
     args = parser.parse_args()
     return args
 
@@ -107,37 +65,96 @@ if __name__ == '__main__':
 
     update_cfg(cfg, args)
 
-    log_dir = cfg["train"]["log"]
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    log_dir = os.path.join(os.getcwd(), log_dir)
-    checkpoint_dir = cfg["train"]["checkpoint"]
-    if not os.path.exists(checkpoint_dir):
-        os.makedirs(checkpoint_dir)
-    checkpoint_dir = os.path.join(os.getcwd(), checkpoint_dir)
+    if cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "":
+        if type(cfg["train"]["gpus"]) is list:
+            gpus = cfg["train"]["gpus"]
+        elif type(cfg["train"]["gpus"]) is int:
+            gpus = [cfg["train"]["gpus"],]
+        else:
+            gpus = cfg["train"]["gpus"].strip().split(",")
+            gpus = [int(i) for i in gpus if i != ""]
+        cfg["train"]["gpus"] = gpus
+        device = [torch.device("cuda", i) for i in gpus]
+    else:
+        cfg["train"]["gpus"] = None
+        device = torch.device("cpu")
+
+    if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
+        cfg["train"]["gpus"] = None
+        device = torch.device("cpu")
+        cfg["train"]["multi_process"] = False
+
+    if cfg["train"]["multi_process"]:
+        if args.local_rank is None:
+            print("""
+            python -m torch.distributed.launch --nproc_per_node=NUM_GPUS_YOU_HAVE
+               YOUR_TRAINING_SCRIPT.py (--arg1 --arg2 --arg3 and all other
+               arguments of your training script)
+            """)
+            exit()
+        else:
+            cfg["train"]["local_rank"] = args.local_rank
+        assert len(cfg["train"]["gpus"]) > 0
+
+    result_dir = cfg["train"]["result"]
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
+    result_dir = os.path.join(os.getcwd(), result_dir)
 
     if cfg["debug"]:
         print("Running in debug mode.")
 
-    print(cfg)
+    if cfg["train"]["multi_process"] and cfg["train"]["local_rank"] != 0:
+        pass
+    else:
+        print(json.dumps(cfg, indent=2))
 
-    resize = Resize(cfg["dataset"]["resize"])
-    test_data = cfg["dataset"]["train_data"]
-    dataset = COCODataset(test_data["root"], test_data["annFile"], resize, debug=cfg["debug"])
     image_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
     ])
-    dataloader = DataLoader(dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=False,
-                                  num_workers=cfg["dataset"]["num_works"],
-                            collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
+    train_transform = Compose([
+        Resize(cfg["dataset"]["resize"]),
+        FlipLeftRight(),
+    ])
+    val_transform = Compose([
+        Resize(cfg["dataset"]["resize"]),
+    ])
 
+    train_data = cfg["dataset"]["train_data"]
+    train_dataset = COCODataset(train_data["root"], train_data["annFile"], train_transform, debug=cfg["debug"])
+    num_classes = len(train_dataset.classes.keys())
+    val_data = cfg["dataset"]["val_data"]
+    val_dataset = COCODataset(val_data["root"], val_data["annFile"], val_transform, debug=cfg["debug"])
+
+    if isinstance(device, list) and not cfg["train"]["multi_process"]:
+        batch_size = cfg["dataset"]["batch_size"] * len(device)
+    else:
+        batch_size = cfg["dataset"]["batch_size"]
+
+    if cfg["train"]["multi_process"]:
+        work_size = int(os.environ["WORLD_SIZE"])
+        local_rank = cfg["train"]["local_rank"]
+        train_sampler = DistributedSampler(train_dataset, num_replicas=work_size, rank=local_rank, shuffle=True)
+        val_sampler = DistributedSampler(val_dataset, num_replicas=work_size, rank=local_rank, shuffle=False)
+    else:
+        train_sampler = None
+        val_sampler = None
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=(train_sampler is None),
+                                  num_workers=cfg["dataset"]["num_works"], sampler=train_sampler,
+                            collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
+    val_dataloader = DataLoader(val_dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=False,
+                                  num_workers=cfg["dataset"]["num_works"], sampler=val_sampler,
+                                collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
+
+    writer = None
     faster_rcnn = lib.model.faster_rcnn.__dict__[cfg["model"]["name"]](
         image_size=cfg["dataset"]["resize"],
-        num_classes=len(dataset.classes.keys()),
+        num_classes=num_classes,
         max_objs_per_image=cfg["dataset"]["max_objs_per_image"],
         backbone_pretrained=cfg["model"]["backbone_pertrained"],
-        logger=None,
+        logger=writer,
+        obj_thresh=cfg["model"]["obj_thresh"],
     )
 
     if cfg["model"]["load_from"] is not None and cfg["model"]["load_from"] != "":
@@ -147,19 +164,39 @@ if __name__ == '__main__':
         else:
             faster_rcnn.load_state_dict(state_dict)
 
-    if cfg["train"]["gpus"] is not None and cfg["train"]["gpus"] != "":
-        if type(cfg["train"]["gpus"]) is list:
-            gpus = cfg["train"]["gpus"]
-        else:
-            gpus = cfg["train"]["gpus"].strip().split(",")
-            gpus = [int(i) for i in gpus if i != ""]
-        assert len(gpus) == 1, "only support one gpus now"
-        cfg["train"]["gpus"] = gpus
-        device = [torch.device("cuda", i) for i in gpus]
-        device = device[0]
+    if cfg["train"]["gpus"] is None or len(cfg["train"]["gpus"]) == 0:
+        faster_rcnn = faster_rcnn.to(device)
+    elif cfg["train"]["multi_process"]:
+        work_size = int(os.environ["WORLD_SIZE"])
+        assert len(cfg["train"]["gpus"]) == work_size
+        device = device[cfg["train"]["local_rank"]]
+        torch.cuda.set_device(device)
+        torch.distributed.init_process_group(backend='nccl', world_size=work_size, rank=cfg["train"]["local_rank"])
+        faster_rcnn = faster_rcnn.to(device)
+        # RuntimeError: Expected to have finished reduction in the prior iteration before starting a new one.
+        # This error indicates that your module has parameters that were not used in producing loss.
+        # You can enable unused parameter detection by
+        #   (1) passing the keyword argument `find_unused_parameters=True` to `torch.nn.parallel.DistributedDataParallel`;
+        #   (2) making sure all `forward` function outputs participate in calculating loss.
+        # If you already have done the above two steps, then the distributed data parallel module wasn't able to
+        # locate the output tensors in the return value of your module's `forward` function.
+        # Please include the loss function and the structure of the return value of `forward` of your module
+        # when reporting this issue (e.g. list, dict, iterable).
+        faster_rcnn = DDP(faster_rcnn, device_ids=[device, ], output_device=device, find_unused_parameters=True)
     else:
-        device = torch.device("cpu")
+        if len(cfg["train"]["gpus"]) == 1:
+            device = device[0]
+            faster_rcnn = faster_rcnn.to(device)
+        else:
+            faster_rcnn = faster_rcnn.to(device[0])
+            faster_rcnn = nn.DataParallel(faster_rcnn, device_ids=device, output_device=device[0])
+            device = device[0]   # 只需把输入传到device[0]，DataParallel会自动把输入分发到各个device中
 
-    faster_rcnn = faster_rcnn.to(device)
+    if cfg["train"]["multi_process"]:
+        result_file_pattern = "val" + "-{}.json".format(cfg["train"]["local_rank"])
+    else:
+        result_file_pattern = "val.json"
+    evaluate(faster_rcnn, val_dataloader, device, os.path.join(result_dir, result_file_pattern), cfg)
 
-    evaluate(faster_rcnn, dataloader, device)
+    if cfg["train"]["multi_process"]:
+        dist.destroy_process_group()
