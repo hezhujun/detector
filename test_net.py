@@ -113,16 +113,12 @@ if __name__ == '__main__':
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
     ])
-    train_transform = Compose([
-        Resize(cfg["dataset"]["resize"]),
-        FlipLeftRight(),
-    ])
     val_transform = Compose([
         Resize(cfg["dataset"]["resize"]),
     ])
 
     train_data = cfg["dataset"]["train_data"]
-    train_dataset = COCODataset(train_data["root"], train_data["annFile"], train_transform, debug=cfg["debug"])
+    train_dataset = COCODataset(train_data["root"], train_data["annFile"], val_transform, debug=cfg["debug"])
     num_classes = len(train_dataset.classes.keys())
     val_data = cfg["dataset"]["val_data"]
     val_dataset = COCODataset(val_data["root"], val_data["annFile"], val_transform, debug=cfg["debug"])
@@ -135,12 +131,12 @@ if __name__ == '__main__':
     if cfg["train"]["multi_process"]:
         work_size = int(os.environ["WORLD_SIZE"])
         local_rank = cfg["train"]["local_rank"]
-        train_sampler = DistributedSampler(train_dataset, num_replicas=work_size, rank=local_rank, shuffle=True)
+        train_sampler = DistributedSampler(train_dataset, num_replicas=work_size, rank=local_rank, shuffle=False)
         val_sampler = DistributedSampler(val_dataset, num_replicas=work_size, rank=local_rank, shuffle=False)
     else:
         train_sampler = None
         val_sampler = None
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=(train_sampler is None),
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False,
                                   num_workers=cfg["dataset"]["num_works"], sampler=train_sampler,
                             collate_fn=BatchCollator(cfg["dataset"]["max_objs_per_image"], image_transform))
     val_dataloader = DataLoader(val_dataset, batch_size=cfg["dataset"]["batch_size"], shuffle=False,
