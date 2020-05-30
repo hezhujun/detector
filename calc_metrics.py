@@ -10,6 +10,7 @@ from lib.dataset.coco import COCODataset
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("filename")
     parser.add_argument("--cfg", default="cfg.yaml")
     args = parser.parse_args()
     return args
@@ -32,11 +33,11 @@ if __name__ == '__main__':
     val_data = cfg["dataset"]["val_data"]
     dataset = COCODataset(val_data["root"], val_data["annFile"], None, debug=cfg["debug"])
 
-    result_file = "val-epoch0"
+    result_file = args.filename
     files = []
     for file in os.listdir(result_dir):
         if os.path.isfile(os.path.join(result_dir, file)):
-            if file.startswith(result_file):
+            if file[:len(result_file)] == result_file and (file[len(result_file)] == '.' or file[len(result_file)] == '-'):
                 files.append(file)
 
     results = []
