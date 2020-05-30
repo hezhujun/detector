@@ -37,7 +37,7 @@ if __name__ == '__main__':
     files = []
     for file in os.listdir(result_dir):
         if os.path.isfile(os.path.join(result_dir, file)):
-            if file.startswith(result_file) and file[len(result_file)] == '.' or file[len(result_file)] == '-':
+            if file[:len(result_file)] == result_file and (file[len(result_file)] == '.' or file[len(result_file)] == '-'):
                 files.append(file)
 
     results = []
