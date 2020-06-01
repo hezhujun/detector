@@ -242,7 +242,7 @@ if __name__ == '__main__':
         {"params": faster_rcnn.cls.parameters()},
         {"params": faster_rcnn.reg.parameters(), "lr": 0.001},
     ], lr=cfg["train"]["lr"], weight_decay=1e-4)
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[8, 10])
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=cfg["train"]["lr_decay_epoch"])
     warmup_scheduler = WarmingUpScheduler(optimizer, init_factor=0.1, steps=50)
     epochs = cfg["train"]["epochs"]
     epoch = 0
