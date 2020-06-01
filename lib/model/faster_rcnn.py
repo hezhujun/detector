@@ -468,7 +468,7 @@ def faster_rcnn_resnet_fpn(
     backbone = BackboneWithFPN(resnet, return_layers, in_channels_list, out_channels)
 
     rpn_in_channels = out_channels
-    roi_pooling_output_size = 14
+    roi_pooling_output_size = 7
     dim_roi_features = 1024  # roi特征向量长度
 
     from torchvision.models.detection.faster_rcnn import TwoMLPHead
