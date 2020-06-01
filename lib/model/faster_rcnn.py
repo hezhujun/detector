@@ -380,13 +380,14 @@ def faster_rcnn_resnet(
     assert C5 is not None
 
     roi_head.add_module("1", nn.modules.AdaptiveAvgPool2d((1, 1)))
-    roi_head.add_module("1_", nn.modules.flatten.Flatten())
+    roi_head.add_module("2", nn.modules.flatten.Flatten())
+    dim_roi_features = c5_channels
     # _in_features = c5_channels * ceil(roi_pooling_output_size / 2) ** 2
-    _in_features = c5_channels
-    fc = nn.Linear(_in_features, dim_roi_features)
-    roi_head.add_module("2", fc)
-    roi_head.add_module("3", nn.BatchNorm1d(dim_roi_features))
-    roi_head.add_module("4", nn.ReLU())
+    # _in_features = c5_channels
+    # fc = nn.Linear(_in_features, dim_roi_features)
+    # roi_head.add_module("2", fc)
+    # roi_head.add_module("3", nn.BatchNorm1d(dim_roi_features))
+    # roi_head.add_module("4", nn.ReLU())
 
     strides = (2 ** 4,)  # C4的步长
     # C4 feature map的大小
@@ -471,11 +472,12 @@ def faster_rcnn_resnet_fpn(
     dim_roi_features = 1024  # roi特征向量长度
 
     from torchvision.models.detection.faster_rcnn import TwoMLPHead
-    roi_head = nn.Sequential()
-    roi_head.add_module("0", nn.Conv2d(out_channels, out_channels, 3, 2, padding=1))
-    roi_head.add_module("1", nn.BatchNorm2d(out_channels))
-    roi_head.add_module("2", nn.ReLU())
-    roi_head.add_module("3", TwoMLPHead(out_channels * floor(roi_pooling_output_size / 2) ** 2, dim_roi_features))
+    roi_head = TwoMLPHead(out_channels * roi_pooling_output_size ** 2, dim_roi_features)
+    # roi_head = nn.Sequential()
+    # roi_head.add_module("0", nn.Conv2d(out_channels, out_channels, 3, 2, padding=1))
+    # roi_head.add_module("1", nn.BatchNorm2d(out_channels))
+    # roi_head.add_module("2", nn.ReLU())
+    # roi_head.add_module("3", TwoMLPHead(out_channels * floor(roi_pooling_output_size / 2) ** 2, dim_roi_features))
 
     strides = (2 ** 2, 2 ** 3, 2 ** 4, 2 ** 5, 2 ** 6)  # P* 的步长
     sizes = [(ceil(image_size[0] / i), ceil(image_size[1] / i)) for i in strides]
